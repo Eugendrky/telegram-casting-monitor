@@ -64,6 +64,8 @@ class Settings:
     notify_peer: str
     port: int
     log_level: str
+    bot_token: str = ""
+    bot_owner_id: int | None = None
 
 
 def load_settings() -> Settings:
@@ -87,6 +89,10 @@ def load_settings() -> Settings:
         raise SystemExit("SCAN_MODE должен быть all или title")
 
     sqlite_path = Path(_env("SQLITE_PATH", "data/seen.db"))
+    bot_owner_raw = _env("BOT_OWNER_ID")
+    bot_owner_id = int(bot_owner_raw) if bot_owner_raw else None
+    if bot_owner_id is not None and bot_owner_id <= 0:
+        raise SystemExit("BOT_OWNER_ID должен быть положительным числом")
 
     return Settings(
         api_id=int(api_id_raw),
@@ -112,4 +118,6 @@ def load_settings() -> Settings:
         notify_peer=_env("NOTIFY_PEER", "me"),
         port=_env_int("PORT", 8080),
         log_level=_env("LOG_LEVEL", "INFO").upper(),
+        bot_token=_env("BOT_TOKEN"),
+        bot_owner_id=bot_owner_id,
     )

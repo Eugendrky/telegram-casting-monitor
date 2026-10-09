@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 
 from telethon import TelegramClient
@@ -10,12 +11,15 @@ from telethon.sessions import StringSession
 from telethon.tl.custom.dialog import Dialog
 from telethon.tl.custom.message import Message
 
+from app.bot import BotController
 from app.config import Settings, load_settings
+from app.control import ScanState
 from app.links import message_link
 from app.matcher import is_casting_title, match_post
 from app.store import Store
 
 log = logging.getLogger("castings")
+Notify = Callable[[str], Awaitable[None]]
 
 
 def _is_target_dialog(dialog: Dialog, scan_mode: str) -> bool:
@@ -60,10 +64,19 @@ async def _health_server(port: int) -> asyncio.AbstractServer:
     return server
 
 
-async def scan_once(client: TelegramClient, settings: Settings, store: Store) -> int:
+async def scan_once(
+    client: TelegramClient,
+    settings: Settings,
+    store: Store,
+    notify: Notify | None = None,
+) -> int:
     cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.lookback_hours)
     sent = 0
     dialogs = 0
+
+    if notify is None:
+        async def notify(text: str) -> None:
+            await client.send_message(settings.notify_peer, text, parse_mode=None, link_preview=False)
 
     async for dialog in client.iter_dialogs():
         if not _is_target_dialog(dialog, settings.scan_mode):
@@ -79,14 +92,16 @@ async def scan_once(client: TelegramClient, settings: Settings, store: Store) ->
                 if store.is_seen(dialog.id, message.id):
                     continue
                 result = match_post(message.raw_text or "", settings.profile)
-                store.mark(dialog.id, message.id, result.matched)
                 if not result.matched:
+                    store.mark(dialog.id, message.id, False)
                     continue
                 if sent >= settings.max_notify_per_cycle:
-                    log.info("лимит уведомлений за цикл (%s), остальное в следующий", settings.max_notify_per_cycle)
+                    log.info("лимит уведомлений за цикл (%s)", settings.max_notify_per_cycle)
                     return sent
                 notice = _format_notice(dialog, message, result.reasons, result.score)
-                await client.send_message(settings.notify_peer, notice)
+                await notify(notice)
+                # Mark a match only after successful delivery. Retry failed sends next cycle.
+                store.mark(dialog.id, message.id, True)
                 sent += 1
                 log.info("матч %s / %s (score %s)", dialog.name, message.id, result.score)
         except FloodWaitError as exc:
@@ -100,24 +115,84 @@ async def scan_once(client: TelegramClient, settings: Settings, store: Store) ->
     return sent
 
 
+async def _scan_loop(
+    client: TelegramClient,
+    settings: Settings,
+    store: Store,
+    notify: Notify,
+    state: ScanState,
+    wake_scan: asyncio.Event,
+) -> None:
+    while True:
+        state.running = True
+        state.last_sent = 0
+        state.cycles += 1
+        state.last_started = datetime.now(timezone.utc)
+        try:
+            count = await scan_once(client, settings, store, notify=notify)
+            state.last_sent = count
+            state.total_sent += count
+            state.last_error = None
+        except FloodWaitError as exc:
+            state.last_error = f"Telegram просит подождать {exc.seconds} секунд"
+            log.warning(state.last_error)
+            await asyncio.sleep(exc.seconds + 1)
+        except Exception as exc:
+            state.last_error = type(exc).__name__
+            log.exception("сбой цикла сканирования")
+        finally:
+            state.running = False
+            state.last_finished = datetime.now(timezone.utc)
+        try:
+            await asyncio.wait_for(wake_scan.wait(), timeout=settings.scan_interval_minutes * 60)
+        except asyncio.TimeoutError:
+            pass
+        wake_scan.clear()
+
+
 async def worker(settings: Settings) -> None:
     store = Store(settings.sqlite_path)
     client = TelegramClient(StringSession(settings.session), settings.api_id, settings.api_hash)
+    bot_client: TelegramClient | None = None
     health = await _health_server(settings.port)
-    async with client:
-        me = await client.get_me()
-        log.info("вошли как %s", getattr(me, "username", None) or me.id)
-        while True:
-            try:
-                await scan_once(client, settings, store)
-            except FloodWaitError as exc:
-                log.warning("глобальный FloodWait %ss", exc.seconds)
-                await asyncio.sleep(exc.seconds + 1)
-            except Exception:
-                log.exception("сбой цикла сканирования")
-            await asyncio.sleep(settings.scan_interval_minutes * 60)
-    health.close()
-    await health.wait_closed()
+    state = ScanState()
+    wake_scan = asyncio.Event()
+
+    def request_scan() -> str:
+        if state.running:
+            return "🔎 Проверка уже выполняется. Результаты придут сюда автоматически."
+        if wake_scan.is_set():
+            return "🔎 Проверка уже поставлена в очередь."
+        wake_scan.set()
+        return "🔎 Запускаю внеочередной поиск. Подходящие кастинги пришлю сюда."
+
+    try:
+        async with client:
+            me = await client.get_me()
+            log.info("вошли как %s", getattr(me, "username", None) or me.id)
+            owner_id = settings.bot_owner_id or me.id
+            if settings.bot_token:
+                # Persistent bot session retains the owner's Telegram peer information across restarts.
+                bot_session = str(settings.sqlite_path.parent / "casting_bot")
+                bot_client = TelegramClient(bot_session, settings.api_id, settings.api_hash)
+                BotController(bot_client, owner_id, settings, state, request_scan).register()
+                await bot_client.start(bot_token=settings.bot_token)
+                log.info("Telegram-бот запущен для владельца %s", owner_id)
+            else:
+                log.info("BOT_TOKEN не задан: уведомления пойдут в %s", settings.notify_peer)
+
+            async def notify(text: str) -> None:
+                if bot_client is not None:
+                    await bot_client.send_message(owner_id, text, parse_mode=None, link_preview=False)
+                else:
+                    await client.send_message(settings.notify_peer, text, parse_mode=None, link_preview=False)
+
+            await _scan_loop(client, settings, store, notify, state, wake_scan)
+    finally:
+        if bot_client is not None:
+            await bot_client.disconnect()
+        health.close()
+        await health.wait_closed()
 
 
 def main() -> None:
