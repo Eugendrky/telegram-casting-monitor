@@ -15,19 +15,12 @@ from app.bot import BotController
 from app.config import Settings, load_settings
 from app.control import ScanState
 from app.links import message_link
-from app.matcher import is_casting_title, match_post
+from app.matcher import match_post
 from app.store import Store
+from app.sources import source_allowed
 
 log = logging.getLogger("castings")
 Notify = Callable[[str], Awaitable[None]]
-
-
-def _is_target_dialog(dialog: Dialog, scan_mode: str) -> bool:
-    if dialog.is_user:
-        return False
-    if scan_mode == "title":
-        return is_casting_title(dialog.name or "")
-    return dialog.is_group or dialog.is_channel
 
 
 def _format_notice(dialog: Dialog, message: Message, reasons: list[str], score: int) -> str:
@@ -78,8 +71,12 @@ async def scan_once(
         async def notify(text: str) -> None:
             await client.send_message(settings.notify_peer, text, parse_mode=None, link_preview=False)
 
+    # Take a consistent snapshot: bot changes take effect in the next cycle.
+    source_mode = store.source_mode()
+    chosen_sources = store.selected_source_ids() if source_mode == "selected" else set()
+
     async for dialog in client.iter_dialogs():
-        if not _is_target_dialog(dialog, settings.scan_mode):
+        if not source_allowed(dialog, settings.scan_mode, source_mode, chosen_sources):
             continue
         dialogs += 1
         try:
@@ -175,7 +172,7 @@ async def worker(settings: Settings) -> None:
                 # Persistent bot session retains the owner's Telegram peer information across restarts.
                 bot_session = str(settings.sqlite_path.parent / "casting_bot")
                 bot_client = TelegramClient(bot_session, settings.api_id, settings.api_hash)
-                BotController(bot_client, owner_id, settings, state, request_scan).register()
+                BotController(bot_client, owner_id, settings, state, request_scan, client, store).register()
                 await bot_client.start(bot_token=settings.bot_token)
                 log.info("Telegram-бот запущен для владельца %s", owner_id)
             else:

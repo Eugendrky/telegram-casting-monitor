@@ -34,6 +34,12 @@ class BotTextTests(unittest.TestCase):
         self.assertIn("Москва", text)
         self.assertIn("мужской", text)
         self.assertIn("Изменение параметров", text)
+        self.assertIn("/sources", text)
+
+
+    def test_selected_mode_status(self) -> None:
+        text = settings_text(_settings(), source_mode="selected", selected_count=2)
+        self.assertIn("только выбранные (2)", text)
 
 
 if __name__ == "__main__":

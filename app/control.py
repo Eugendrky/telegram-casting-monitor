@@ -40,9 +40,16 @@ def status_text(state: ScanState, settings: Settings) -> str:
     ).strip()
 
 
-def settings_text(settings: Settings) -> str:
+def settings_text(
+    settings: Settings, source_mode: str = "configured", selected_count: int = 0,
+) -> str:
     profile = settings.profile
-    mode = "все группы и каналы" if settings.scan_mode == "all" else "по названию группы или канала"
+    if source_mode == "selected":
+        mode = f"только выбранные ({selected_count})"
+    elif source_mode == "all":
+        mode = "все группы и каналы"
+    else:
+        mode = "все группы и каналы" if settings.scan_mode == "all" else "по названию группы или канала"
     return (
         "⚙️ Текущие настройки\n\n"
         f"Источники: {mode}\n"
@@ -52,6 +59,6 @@ def settings_text(settings: Settings) -> str:
         f"Рост: {str(profile.height_cm) + ' см' if profile.height_cm is not None else 'любой'}\n"
         f"Детские кастинги: {'да' if profile.kids_ok else 'нет'}\n"
         f"Интервал: {settings.scan_interval_minutes} мин.\n\n"
-        "Пока параметры читаются из Railway. Изменение параметров "
-        "и выбор групп через Telegram добавим следующим этапом."
+        "Источники настраиваются через /sources. Изменение параметров "
+        "профиля пока выполняется через Railway."
     )
