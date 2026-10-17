@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable
 
@@ -17,6 +18,7 @@ from app.store import Store
 log = logging.getLogger("castings.bot")
 PAGE_SIZE = 8
 CACHE_SECONDS = 120
+USERNAME_RE = re.compile(r"(?:https?://)?t\.me/([a-zA-Z0-9_]+)(?:/\d+)?|@([a-zA-Z0-9_]+)")
 
 
 class BotController:
@@ -52,10 +54,12 @@ class BotController:
         if action in {"start", "help"}:
             return (
                 "🎬 Мой помощник по кастингам\n\n"
-                "Собираю подходящие объявления из Telegram-групп и каналов, "
-                "доступных твоему аккаунту, и присылаю сюда.\n\n"
-                "Открой «Источники», чтобы выбрать группы и каналы. "
-                "Используй «Искать сейчас» для внеочередной проверки."
+                "Собираю подходящие объявления из Telegram-групп и каналов.\n\n"
+                "Команды:\n"
+                "/sources — выбрать из уже подписанных\n"
+                "/addsource @username или ссылка — добавить группу вручную\n"
+                "/listsources — показать вручно добавленные\n"
+                "/scan — запустить поиск сейчас"
             )
         if action == "status":
             return status_text(self.state, self.settings)
@@ -67,7 +71,7 @@ class BotController:
             )
         if action == "scan":
             return self.request_scan()
-        return "Используй кнопки ниже или команды /start, /sources, /status, /scan, /settings."
+        return "Используй кнопки ниже или команды /start, /sources, /addsource, /status, /scan."
 
     async def _available_sources(self, refresh: bool = False) -> list[tuple[int, str, str]]:
         if (not refresh and self._sources_cache is not None
@@ -88,11 +92,12 @@ class BotController:
     ) -> tuple[str, list[list[Button]]]:
         sources = await self._available_sources(refresh=refresh)
         selected = self.store.selected_source_ids()
+        custom = self.store.custom_sources()
         mode = self.store.source_mode()
         page_count = max(1, (len(sources) + PAGE_SIZE - 1) // PAGE_SIZE)
         page = max(0, min(page, page_count - 1))
         if mode == "selected":
-            state = f"только выбранные ({len(selected)})"
+            state = f"только выбранные ({len(selected)} + {len(custom)} вручных)"
         elif mode == "all":
             state = "все группы и каналы"
         else:
@@ -101,14 +106,11 @@ class BotController:
             f"📚 Источники кастингов\n\nРежим: {state}\n"
             f"Доступно групп и каналов: {len(sources)}\n"
             f"Страница {page + 1}/{page_count}\n\n"
-            "Нажми на название, чтобы включить или исключить источник. "
-            "После первого выбора поиск переключится на выбранные группы. "
-            "Изменения вступают в силу со следующей проверки."
+            "Нажми на название, чтобы включить/исключить.\n"
+            "Или используй /addsource @username"
         )
-        if mode == "selected" and not selected:
-            text += "\n\n⚠️ Не выбрано ни одного источника: поиск приостановлен."
-        if not sources:
-            text += "\n\nНа подключённом Telegram-аккаунте нет доступных групп или каналов."
+        if mode == "selected" and not selected and not custom:
+            text += "\n\n⚠️ Не выбрано ни одного источника."
 
         buttons: list[list[Button]] = []
         for chat_id, title, kind in sources[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]:
@@ -174,7 +176,11 @@ class BotController:
             if not event.is_private or event.sender_id != self.owner_id:
                 return
             raw = (event.raw_text or "").strip()
-            command = raw.split(maxsplit=1)[0].split("@", 1)[0].lower() if raw else ""
+            if not raw:
+                return
+            command = raw.split(maxsplit=1)[0].split("@", 1)[0].lower()
+            args = raw.split(maxsplit=1)[1] if len(raw.split(maxsplit=1)) > 1 else ""
+
             if command == "/sources":
                 try:
                     text, buttons = await self._sources_screen(0)
@@ -184,6 +190,29 @@ class BotController:
                     return
                 await event.respond(text, buttons=buttons, parse_mode=None)
                 return
+
+            if command == "/addsource":
+                match = USERNAME_RE.search(args or raw)
+                if not match:
+                    await event.respond("Напиши: /addsource @username или ссылку t.me/...", parse_mode=None)
+                    return
+                username = (match.group(1) or match.group(2) or "").lower()
+                if not username:
+                    await event.respond("Не смог распознать username.", parse_mode=None)
+                    return
+                self.store.add_custom_source(username)
+                await event.respond(f"✅ Добавил @{username} в список источников.", parse_mode=None)
+                return
+
+            if command == "/listsources":
+                custom = self.store.custom_sources()
+                if not custom:
+                    await event.respond("Вручных источников пока нет. Используй /addsource @username", parse_mode=None)
+                    return
+                lines = [f"• @{u} ({t or '---'})" for u, t, _ in custom]
+                await event.respond("📋 Вручно добавленные источники:\n" + "\n".join(lines), parse_mode=None)
+                return
+
             action = {
                 "/start": "start", "/help": "help", "/status": "status",
                 "/scan": "scan", "/settings": "settings",
