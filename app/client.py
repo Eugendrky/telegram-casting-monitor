@@ -16,6 +16,9 @@ def user_client(settings: Settings) -> TelegramClient:
         session,
         settings.api_id,
         settings.api_hash,
-        device_model="Casting Monitor",
-        app_version="1.0",
+        device_model="Desktop",
+        system_version="Windows 10",
+        app_version="4.16.8 x64",
+        lang_code="en",
+        system_lang_code="en-US",
     )
