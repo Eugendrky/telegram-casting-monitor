@@ -2,7 +2,7 @@
 
 Ищет кастинги в **ваших** Telegram-группах и каналах на компьютере и присылает подходящие в чат с ботом (или в Избранное).
 
-Регистрировать приложение на [my.telegram.org](https://my.telegram.org/apps) **не нужно**. BotFather сам по себе группы не читает, поэтому программа один раз входит в Telegram как обычный клиент (телефон + код), а ключи берёт из [открытого исходника Telegram Android](https://github.com/DrKLO/Telegram/blob/master/TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java).
+Регистрировать приложение на [my.telegram.org](https://my.telegram.org/apps) **не нужно**. BotFather сам по себе группы не читает, поэтому программа один раз входит в Telegram как обычный клиент (телефон + код), а ключи берёт из официального Telegram Desktop (API ID 2040).
 
 ## Как запустить на Mac
 
