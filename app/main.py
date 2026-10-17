@@ -7,11 +7,11 @@ from datetime import datetime, timedelta, timezone
 
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError, RPCError
-from telethon.sessions import StringSession
 from telethon.tl.custom.dialog import Dialog
 from telethon.tl.custom.message import Message
 
 from app.bot import BotController
+from app.client import user_client
 from app.config import Settings, load_settings
 from app.control import ScanState
 from app.links import message_link
@@ -149,9 +149,9 @@ async def _scan_loop(
 
 async def worker(settings: Settings) -> None:
     store = Store(settings.sqlite_path)
-    client = TelegramClient(StringSession(settings.session), settings.api_id, settings.api_hash)
+    client = user_client(settings)
     bot_client: TelegramClient | None = None
-    health = await _health_server(settings.port)
+    health = await _health_server(settings.port) if settings.port > 0 else None
     state = ScanState()
     wake_scan = asyncio.Event()
 
@@ -167,6 +167,8 @@ async def worker(settings: Settings) -> None:
         async with client:
             me = await client.get_me()
             log.info("вошли как %s", getattr(me, "username", None) or me.id)
+            if settings.used_official_api:
+                log.info("api_id взят из открытого исходника Telegram Android (без my.telegram.org)")
             owner_id = settings.bot_owner_id or me.id
             if settings.bot_token:
                 # Persistent bot session retains the owner's Telegram peer information across restarts.
@@ -188,8 +190,9 @@ async def worker(settings: Settings) -> None:
     finally:
         if bot_client is not None:
             await bot_client.disconnect()
-        health.close()
-        await health.wait_closed()
+        if health is not None:
+            health.close()
+            await health.wait_closed()
 
 
 def main() -> None:

@@ -33,7 +33,7 @@ class BotTextTests(unittest.TestCase):
         text = settings_text(_settings())
         self.assertIn("Москва", text)
         self.assertIn("мужской", text)
-        self.assertIn("Изменение параметров", text)
+        self.assertIn("Профиль (город, пол, возраст)", text)
         self.assertIn("/sources", text)
 
 

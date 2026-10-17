@@ -96,7 +96,7 @@ class BotController:
         elif mode == "all":
             state = "все группы и каналы"
         else:
-            state = f"по настройке Railway ({self.settings.scan_mode})"
+            state = f"по настройке SCAN_MODE ({self.settings.scan_mode})"
         text = (
             f"📚 Источники кастингов\n\nРежим: {state}\n"
             f"Доступно групп и каналов: {len(sources)}\n"

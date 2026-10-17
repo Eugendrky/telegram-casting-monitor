@@ -6,6 +6,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from app.credentials import resolve_api_credentials
+
 load_dotenv()
 
 
@@ -66,17 +68,22 @@ class Settings:
     log_level: str
     bot_token: str = ""
     bot_owner_id: int | None = None
+    session_path: Path = field(default_factory=lambda: Path("data/user.session"))
+    used_official_api: bool = False
 
 
 def load_settings() -> Settings:
-    api_id_raw = _env("TELEGRAM_API_ID")
-    api_hash = _env("TELEGRAM_API_HASH")
-    session = _env("TELEGRAM_SESSION")
-    if not api_id_raw or not api_hash or not session:
-        raise SystemExit(
-            "Задайте TELEGRAM_API_ID, TELEGRAM_API_HASH и TELEGRAM_SESSION "
-            "(сессию получите локально: python scripts/login.py)"
+    try:
+        api_id, api_hash, used_official_api = resolve_api_credentials(
+            _env("TELEGRAM_API_ID"),
+            _env("TELEGRAM_API_HASH"),
         )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    session = _env("TELEGRAM_SESSION")
+    sqlite_path = Path(_env("SQLITE_PATH", "data/seen.db"))
+    session_path = Path(_env("TELEGRAM_SESSION_PATH") or str(sqlite_path.parent / "user.session"))
 
     age_raw = _env("PROFILE_AGE")
     height_raw = _env("PROFILE_HEIGHT_CM")
@@ -88,14 +95,16 @@ def load_settings() -> Settings:
     if scan_mode not in {"all", "title"}:
         raise SystemExit("SCAN_MODE должен быть all или title")
 
-    sqlite_path = Path(_env("SQLITE_PATH", "data/seen.db"))
     bot_owner_raw = _env("BOT_OWNER_ID")
     bot_owner_id = int(bot_owner_raw) if bot_owner_raw else None
     if bot_owner_id is not None and bot_owner_id <= 0:
         raise SystemExit("BOT_OWNER_ID должен быть положительным числом")
 
+    port_raw = os.getenv("PORT")
+    port = int(port_raw) if port_raw and port_raw.strip() else 0
+
     return Settings(
-        api_id=int(api_id_raw),
+        api_id=api_id,
         api_hash=api_hash,
         session=session,
         profile=Profile(
@@ -116,8 +125,10 @@ def load_settings() -> Settings:
         chat_delay_seconds=_env_float("CHAT_DELAY_SECONDS", 0.8),
         sqlite_path=sqlite_path,
         notify_peer=_env("NOTIFY_PEER", "me"),
-        port=_env_int("PORT", 8080),
+        port=port,
         log_level=_env("LOG_LEVEL", "INFO").upper(),
         bot_token=_env("BOT_TOKEN"),
         bot_owner_id=bot_owner_id,
+        session_path=session_path,
+        used_official_api=used_official_api,
     )

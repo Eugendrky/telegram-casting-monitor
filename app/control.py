@@ -59,6 +59,6 @@ def settings_text(
         f"Рост: {str(profile.height_cm) + ' см' if profile.height_cm is not None else 'любой'}\n"
         f"Детские кастинги: {'да' if profile.kids_ok else 'нет'}\n"
         f"Интервал: {settings.scan_interval_minutes} мин.\n\n"
-        "Источники настраиваются через /sources. Изменение параметров "
-        "профиля пока выполняется через Railway."
+        "Источники настраиваются через /sources. Профиль (город, пол, возраст) "
+        "меняется в файле .env на компьютере."
     )
