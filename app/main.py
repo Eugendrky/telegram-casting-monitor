@@ -57,6 +57,47 @@ async def _health_server(port: int) -> asyncio.AbstractServer:
     return server
 
 
+async def _scan_entity(
+    client: TelegramClient,
+    entity,
+    name: str,
+    settings: Settings,
+    store: Store,
+    notify: Notify,
+    cutoff: datetime,
+    sent: int,
+) -> int:
+    try:
+        async for message in client.iter_messages(entity, limit=settings.messages_per_chat):
+            if message.date is None:
+                continue
+            msg_date = message.date if message.date.tzinfo else message.date.replace(tzinfo=timezone.utc)
+            if msg_date < cutoff:
+                break
+            chat_id = getattr(entity, "id", 0)
+            if store.is_seen(chat_id, message.id):
+                continue
+            result = match_post(message.raw_text or "", settings.profile)
+            if not result.matched:
+                store.mark(chat_id, message.id, False)
+                continue
+            if sent >= settings.max_notify_per_cycle:
+                log.info("лимит уведомлений за цикл (%s)", settings.max_notify_per_cycle)
+                return sent
+            notice = _format_notice(type("D", (), {"name": name})(), message, result.reasons, result.score)
+            await notify(notice)
+            store.mark(chat_id, message.id, True)
+            sent += 1
+            log.info("матч %s / %s (score %s)", name, message.id, result.score)
+    except FloodWaitError as exc:
+        log.warning("FloodWait %ss на чате %s", exc.seconds, name)
+        await asyncio.sleep(exc.seconds + 1)
+    except RPCError:
+        log.exception("ошибка Telegram на чате %s", name)
+    await asyncio.sleep(settings.chat_delay_seconds)
+    return sent
+
+
 async def scan_once(
     client: TelegramClient,
     settings: Settings,
@@ -71,42 +112,30 @@ async def scan_once(
         async def notify(text: str) -> None:
             await client.send_message(settings.notify_peer, text, parse_mode=None, link_preview=False)
 
-    # Take a consistent snapshot: bot changes take effect in the next cycle.
     source_mode = store.source_mode()
     chosen_sources = store.selected_source_ids() if source_mode == "selected" else set()
 
+    # 1. Обычные диалоги
     async for dialog in client.iter_dialogs():
         if not source_allowed(dialog, settings.scan_mode, source_mode, chosen_sources):
             continue
         dialogs += 1
-        try:
-            async for message in client.iter_messages(dialog.entity, limit=settings.messages_per_chat):
-                if message.date is None:
-                    continue
-                msg_date = message.date if message.date.tzinfo else message.date.replace(tzinfo=timezone.utc)
-                if msg_date < cutoff:
-                    break
-                if store.is_seen(dialog.id, message.id):
-                    continue
-                result = match_post(message.raw_text or "", settings.profile)
-                if not result.matched:
-                    store.mark(dialog.id, message.id, False)
-                    continue
+        sent = await _scan_entity(client, dialog.entity, dialog.name or "?", settings, store, notify, cutoff, sent)
+        if sent >= settings.max_notify_per_cycle:
+            break
+
+    # 2. Вручно добавленные по username
+    if source_mode == "selected" or not chosen_sources:
+        for username, title, _ in store.custom_sources():
+            try:
+                entity = await client.get_entity(username)
+                name = getattr(entity, "title", None) or title or username
+                dialogs += 1
+                sent = await _scan_entity(client, entity, name, settings, store, notify, cutoff, sent)
                 if sent >= settings.max_notify_per_cycle:
-                    log.info("лимит уведомлений за цикл (%s)", settings.max_notify_per_cycle)
-                    return sent
-                notice = _format_notice(dialog, message, result.reasons, result.score)
-                await notify(notice)
-                # Mark a match only after successful delivery. Retry failed sends next cycle.
-                store.mark(dialog.id, message.id, True)
-                sent += 1
-                log.info("матч %s / %s (score %s)", dialog.name, message.id, result.score)
-        except FloodWaitError as exc:
-            log.warning("FloodWait %ss на чате %s", exc.seconds, dialog.name)
-            await asyncio.sleep(exc.seconds + 1)
-        except RPCError:
-            log.exception("ошибка Telegram на чате %s", dialog.name)
-        await asyncio.sleep(settings.chat_delay_seconds)
+                    break
+            except Exception as exc:
+                log.warning("не удалось открыть @%s: %s", username, exc)
 
     log.info("цикл: чатов %s, уведомлений %s", dialogs, sent)
     return sent
@@ -168,10 +197,9 @@ async def worker(settings: Settings) -> None:
             me = await client.get_me()
             log.info("вошли как %s", getattr(me, "username", None) or me.id)
             if settings.used_official_api:
-                log.info("api_id взят из открытого исходника Telegram Android (без my.telegram.org)")
+                log.info("api_id взят из открытого исходника Telegram Desktop")
             owner_id = settings.bot_owner_id or me.id
             if settings.bot_token:
-                # Persistent bot session retains the owner's Telegram peer information across restarts.
                 bot_session = str(settings.sqlite_path.parent / "casting_bot")
                 bot_client = TelegramClient(bot_session, settings.api_id, settings.api_hash)
                 BotController(bot_client, owner_id, settings, state, request_scan, client, store).register()
