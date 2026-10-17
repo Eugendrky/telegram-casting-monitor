@@ -30,6 +30,15 @@ class Store:
         )
         self._conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS custom_sources (
+                username TEXT PRIMARY KEY,
+                title TEXT,
+                chat_id INTEGER
+            )
+            """
+        )
+        self._conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS preferences (
                 name TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -56,7 +65,6 @@ class Store:
         self._conn.commit()
 
     def source_mode(self) -> str:
-        """configured follows SCAN_MODE; all/selected override it from the Telegram UI."""
         row = self._conn.execute(
             "SELECT value FROM preferences WHERE name = 'source_mode'"
         ).fetchone()
@@ -76,7 +84,6 @@ class Store:
         return {row[0] for row in self._conn.execute("SELECT chat_id FROM selected_sources")}
 
     def toggle_source(self, chat_id: int, title: str) -> bool:
-        """Toggle a valid visible Telegram dialog and enable selected-only mode."""
         if self._conn.execute("SELECT 1 FROM selected_sources WHERE chat_id = ?", (chat_id,)).fetchone():
             self._conn.execute("DELETE FROM selected_sources WHERE chat_id = ?", (chat_id,))
             selected = False
@@ -92,6 +99,26 @@ class Store:
         )
         self._conn.commit()
         return selected
+
+    def add_custom_source(self, username: str, title: str | None = None, chat_id: int | None = None) -> None:
+        username = username.lstrip("@").lower()
+        self._conn.execute(
+            "INSERT OR REPLACE INTO custom_sources(username, title, chat_id) VALUES (?, ?, ?)",
+            (username, title or username, chat_id),
+        )
+        self._conn.execute(
+            "INSERT INTO preferences(name, value) VALUES ('source_mode', 'selected') "
+            "ON CONFLICT(name) DO UPDATE SET value='selected'"
+        )
+        self._conn.commit()
+
+    def remove_custom_source(self, username: str) -> None:
+        username = username.lstrip("@").lower()
+        self._conn.execute("DELETE FROM custom_sources WHERE username = ?", (username,))
+        self._conn.commit()
+
+    def custom_sources(self) -> list[tuple[str, str | None, int | None]]:
+        return list(self._conn.execute("SELECT username, title, chat_id FROM custom_sources"))
 
     def close(self) -> None:
         self._conn.close()
