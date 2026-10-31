@@ -52,6 +52,12 @@ CREATE TABLE IF NOT EXISTS meta (
  key TEXT PRIMARY KEY,
  value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS public_state (
+ chat_id INTEGER PRIMARY KEY,
+ cursor INTEGER NOT NULL DEFAULT 0,
+ next_scan INTEGER NOT NULL DEFAULT 0,
+ last_error TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_deliveries_pending ON deliveries(status);
 """
 
@@ -62,6 +68,52 @@ class Database:
         self.connection = sqlite3.connect(path)
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.executescript(SCHEMA)
+
+    def add_public(self, username: str):
+        from app.public_channels import normalize_channel, source_id
+        username = normalize_channel(username)
+        chat_id = source_id(username)
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO sources(chat_id,title,username,kind,enabled,joined)
+                   VALUES(?,?,?,'public',1,1)
+                   ON CONFLICT(chat_id) DO UPDATE SET enabled=1,joined=1""",
+                (chat_id,"@"+username,username))
+            self.connection.execute("INSERT OR IGNORE INTO public_state(chat_id) VALUES(?)",(chat_id,))
+        return chat_id
+
+    def public_sources(self):
+        return list(self.connection.execute(
+            "SELECT chat_id,title,kind,enabled,joined,username FROM sources WHERE kind='public' ORDER BY title"
+        ))
+
+    def public_cursor(self,chat_id):
+        row=self.connection.execute("SELECT cursor FROM public_state WHERE chat_id=?",(chat_id,)).fetchone()
+        return row[0] if row else 0
+
+    def advance_public_cursor(self,chat_id,message_id):
+        with self.connection:
+            self.connection.execute(
+                "UPDATE public_state SET cursor=MAX(cursor,?) WHERE chat_id=?",
+                (message_id,chat_id))
+
+    def should_scan_public(self,chat_id,interval):
+        import time
+        row=self.connection.execute("SELECT next_scan FROM public_state WHERE chat_id=?",(chat_id,)).fetchone()
+        return bool(row and row[0]<=int(time()))
+
+    def update_public_status(self,chat_id,error=None,retry_after=1200):
+        import time
+        with self.connection:
+            self.connection.execute(
+                "UPDATE public_state SET last_error=?,next_scan=? WHERE chat_id=?",
+                (error,int(time())+retry_after,chat_id))
+
+    def public_status(self):
+        return list(self.connection.execute(
+            """SELECT s.title,p.cursor,p.last_error,p.next_scan FROM sources s
+               JOIN public_state p ON p.chat_id=s.chat_id ORDER BY s.title"""
+        ))
 
     def close(self):
         self.connection.close()

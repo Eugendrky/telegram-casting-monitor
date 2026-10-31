@@ -9,6 +9,7 @@ from app.bot_db import Database
 from app.bot_http import BotAPI, TelegramError
 from app.config import Profile
 from app.matcher import match_post
+from app.public_channels import normalize_channel, monitor_public
 
 log = logging.getLogger("casting.bot")
 HELP = ("🎬 Поиск кастингов\n\nДобавьте меня в группу или канал с правом читать новые "
@@ -62,7 +63,7 @@ class Receiver:
             following="🔔" if self.db.following(user_id,chat_id) else "🔕"
             lines.append(f"{status} {following} {title}\nID: {chat_id}")
         if not lines:
-            return "Источников пока нет. Добавьте бота в группу или канал."
+            return "Источников пока нет. Администратор может добавить /addsource @channel"
         return ("Источники:\n"+ "\n".join(lines[:35])+
                 "\n\n/follow ID и /unfollow ID — подписка на конкретный источник"+
                 ("\n/enable ID и /disable ID — разрешения администратора" if user_id==self.owner_id else ""))
@@ -76,7 +77,23 @@ class Receiver:
         cmd,*rest=text.split(maxsplit=1)
         cmd=cmd.split("@")[0].lower()
         arg=rest[0].strip() if rest else ""
-        if cmd=="/start":
+        if cmd=="/addsource":
+            if self.owner_id <= 0 or user_id != self.owner_id:
+                self.api.send(user_id,"Добавлять каналы может администратор.")
+                return
+            try:
+                channel=normalize_channel(arg)
+                channel_id=self.db.add_public(channel)
+            except ValueError as exc:
+                self.api.send(user_id,str(exc))
+                return
+            self.api.send(user_id,f"✅ Добавлен публичный канал @{channel}. ID: {channel_id}. Проверю доступность при ближайшем цикле.")
+        elif cmd=="/publicstatus":
+            if user_id != self.owner_id:
+                return
+            rows=self.db.public_status()
+            self.api.send(user_id,"\\n".join(f"{x[0]}: последний пост {x[1]}, ошибка {x[2] or 'нет'}" for x in rows)[:3700] or "Публичных каналов пока нет.")
+        elif cmd=="/start":
             self.db.register(user_id)
             self.api.send(user_id,HELP + f"\n\nВаш Telegram ID: {user_id}" +
                           ("\nУкажите BOT_OWNER_ID в Railway, чтобы управлять источниками." if self.owner_id <= 0 else ""))
@@ -194,6 +211,9 @@ async def run():
         await asyncio.to_thread(api.call,"deleteWebhook",drop_pending_updates=False)
         await asyncio.to_thread(api.call,"getMe")
         log.info("Bot API started: no user session used")
+        public_task=asyncio.create_task(monitor_public(
+            db,receiver,interval_seconds=int(os.getenv("PUBLIC_SCAN_INTERVAL_SECONDS","1800")),
+            lookback_hours=int(os.getenv("PUBLIC_LOOKBACK_HOURS","48"))))
         while True:
             try:
                 updates=await asyncio.to_thread(api.get_updates,db.cursor()+1)
@@ -217,7 +237,11 @@ async def run():
             except Exception:
                 log.exception("Polling loop failure")
                 await asyncio.sleep(10)
-    finally: db.close()
+    finally:
+        if "public_task" in locals():
+            public_task.cancel()
+            await asyncio.gather(public_task,return_exceptions=True)
+        db.close()
 
 def main():
     logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"),
