@@ -86,12 +86,6 @@ CREATE TABLE IF NOT EXISTS suggestion_input (
  awaiting INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_deliveries_pending ON deliveries(status);
-CREATE TABLE IF NOT EXISTS junction_relays (
- relay_chat_id INTEGER PRIMARY KEY,
- source_chat_id INTEGER NOT NULL UNIQUE,
- junction_bot_id INTEGER NOT NULL,
- created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
 """
 
 def synchronized(cls):
@@ -270,47 +264,6 @@ class Database:
                 (chat_id,"@"+username,username))
             self.connection.execute("INSERT OR IGNORE INTO public_state(chat_id) VALUES(?)",(chat_id,))
         return chat_id
-
-    def junction_bind(self, relay_chat_id: int, source_chat_id: int, junction_bot_id: int):
-        """Bind one owner-controlled relay group to one approved casting source."""
-        if not isinstance(relay_chat_id,int) or relay_chat_id>=0:
-            raise ValueError("Нужен идентификатор Telegram-группы")
-        if not isinstance(junction_bot_id,int) or junction_bot_id<=0:
-            raise ValueError("Отправитель Junction Bot не подтверждён")
-        source=self.source(source_chat_id)
-        if not source or source[2]!="public" or not source[3] or not source[4]:
-            raise ValueError("Источник не разрешён в каталоге")
-        with self.connection:
-            self.connection.execute("DELETE FROM junction_relays WHERE source_chat_id=?",
-                                    (source_chat_id,))
-            self.connection.execute(
-                """INSERT INTO junction_relays(relay_chat_id,source_chat_id,junction_bot_id)
-                   VALUES (?,?,?) ON CONFLICT(relay_chat_id) DO UPDATE SET
-                   source_chat_id=excluded.source_chat_id,
-                   junction_bot_id=excluded.junction_bot_id""",
-                (relay_chat_id,source_chat_id,junction_bot_id)
-            )
-
-    def junction_binding(self, relay_chat_id: int):
-        return self.connection.execute(
-            """SELECT r.source_chat_id,s.title,s.username,r.junction_bot_id
-               FROM junction_relays r JOIN sources s ON s.chat_id=r.source_chat_id
-               WHERE r.relay_chat_id=? AND s.kind='public'
-                 AND s.enabled=1 AND s.joined=1""",(relay_chat_id,)
-        ).fetchone()
-
-    def junction_unbind(self, relay_chat_id: int) -> bool:
-        with self.connection:
-            return bool(self.connection.execute(
-                "DELETE FROM junction_relays WHERE relay_chat_id=?",(relay_chat_id,)
-            ).rowcount)
-
-    def junction_relays(self):
-        return self.connection.execute(
-            """SELECT r.relay_chat_id,s.title,r.junction_bot_id
-               FROM junction_relays r JOIN sources s ON r.source_chat_id=s.chat_id
-               ORDER BY s.title"""
-        ).fetchall()
 
     def public_sources(self):
         return list(self.connection.execute(
