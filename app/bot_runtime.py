@@ -26,7 +26,7 @@ HELP = (
     "/sources — выбранные каналы и подписки\n"
     "/castings — мои последние находки\n"
     "/pause и /resume — уведомления\n"
-    "/status — состояние\n/suggest — предложить канал\n\n"
+    "/status — состояние\n/scan — проверить источники\n/suggest — предложить канал\n\n"
     "Предложить новый канал можно через /suggest."
 )
 ADMIN_HELP = ("\n\nДля администратора: /admin, /addsource "
@@ -93,6 +93,7 @@ def menu():
     return {"inline_keyboard":[
         [{"text":"📨 Предложить канал","callback_data":"suggest:start"},
          {"text":"📚 Источники","callback_data":"menu:sources"}],
+        [{"text":"🔎 Проверить источники","callback_data":"scan:now"}],
         [{"text":"👤 Мой профиль","callback_data":"menu:profile"},
          {"text":"🎬 Кастинги","callback_data":"menu:castings"}]
     ]}
@@ -239,6 +240,8 @@ class Receiver:
                 self.db.register(user_id)
                 self.db.follow(user_id,chat_id,cmd=="/follow")
                 self.api.send(user_id,"Подписка изменена.")
+        elif cmd=="/scan":
+            self.request_scan(user_id)
         elif cmd=="/castings":
             self.refresh_user(user_id)
             self.flush()
@@ -256,6 +259,20 @@ class Receiver:
                 "Подборка обновляется после проверки публичных страниц. "
                 "Не все Telegram-группы предоставляют сообщения через веб-страницы.")
         else: self.api.send(user_id,HELP)
+
+    def request_scan(self, user_id: int):
+        self.db.register(user_id)
+        count, retry_after = self.db.request_manual_scan()
+        if count:
+            self.api.send(user_id,
+                f"🔎 Запланирована проверка {count} публичных источников. "
+                "Проверка выполняется последовательно; найденные подходящие объявления "
+                "поступят отдельными сообщениями. Результат можно проверить через /status.")
+        else:
+            wait = max(1, (retry_after+59)//60)
+            self.api.send(user_id,
+                f"Повторная проверка пока недоступна. Следующая попытка примерно через {wait} мин. "
+                "Автоматическая проверка продолжает работать.")
 
     def submit_suggestion(self, user_id: int, raw: str):
         try:
@@ -288,7 +305,9 @@ class Receiver:
         if callback_id:
             try: self.api.call("answerCallbackQuery",callback_query_id=callback_id)
             except TelegramError: pass
-        if data=="suggest:start":
+        if data=="scan:now":
+            self.request_scan(user_id)
+        elif data=="suggest:start":
             self.db.set_waiting_for_suggestion(user_id,True)
             self.api.send(user_id,"Пришлите ссылку на публичный Telegram-канал.")
         elif data=="menu:sources":
