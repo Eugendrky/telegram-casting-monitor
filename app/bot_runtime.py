@@ -318,6 +318,10 @@ async def run():
     owner=int(os.getenv("BOT_OWNER_ID","0") or "0")
     path=Path(os.getenv("SQLITE_PATH","/data/castings.db"))
     db=Database(path)
+    # Owner-supplied initial public sources. Existing approval/settings persist.
+    for name in ("castingiot4000r", "moscowfilms", "kinocekh"):
+        if not any(item[5] == name for item in db.sources()):
+            db.add_public(name)
     api=BotAPI(token)
     receiver=Receiver(api,db,owner)
     try:
