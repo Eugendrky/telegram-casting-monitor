@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 import urllib.error
 import urllib.request
 
@@ -52,3 +53,42 @@ class BotAPI:
         if reply_markup:
             params["reply_markup"] = reply_markup
         return self.call("sendMessage", **params)
+
+    def send_photo(self, chat_id: int, png: bytes, caption: str = ""):
+        """Upload a short-lived QR image only to the caller-supplied chat.
+
+        The login token stays out of logs, source control, and text messages.
+        """
+        if not png or len(png)>1_000_000 or not png.startswith(b"\\x89PNG\\r\\n\\x1a\\n"):
+            raise ValueError("Expected a small PNG image")
+        boundary="CastingBot"+secrets.token_hex(12)
+        prefix=(
+            "--"+boundary+"\\r\\n"
+            'Content-Disposition: form-data; name="chat_id"\\r\\n\\r\\n'
+            +str(chat_id)+"\\r\\n"
+            "--"+boundary+"\\r\\n"
+            'Content-Disposition: form-data; name="caption"\\r\\n\\r\\n'
+            +caption[:200]+"\\r\\n"
+            "--"+boundary+"\\r\\n"
+            'Content-Disposition: form-data; name="photo"; filename="login.png"\\r\\n'
+            "Content-Type: image/png\\r\\n\\r\\n"
+        ).replace("\\r","\r").replace("\\n","\n").encode("utf-8")
+        suffix=("\r\n--"+boundary+"--\r\n").encode("ascii")
+        request=urllib.request.Request(
+            self.base_url+"sendPhoto",
+            data=prefix+png+suffix,
+            headers={"Content-Type":"multipart/form-data; boundary="+boundary},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request,timeout=self.timeout) as response:
+                result=json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            try:
+                result=json.loads(exc.read())
+            except (ValueError,OSError):
+                raise TelegramError(exc.code,"Не удалось отправить QR") from exc
+        if not result.get("ok"):
+            raise TelegramError(result.get("error_code",0),
+                                result.get("description","Ошибка отправки QR"))
+        return result.get("result")
