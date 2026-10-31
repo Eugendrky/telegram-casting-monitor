@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
+from functools import wraps
 from pathlib import Path
 
 SCHEMA = """
@@ -58,16 +60,120 @@ CREATE TABLE IF NOT EXISTS public_state (
  next_scan INTEGER NOT NULL DEFAULT 0,
  last_error TEXT
 );
+CREATE TABLE IF NOT EXISTS suggestions (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ user_id INTEGER NOT NULL,
+ username TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'pending',
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ reviewed_at TEXT,
+ UNIQUE(user_id, username)
+);
+CREATE INDEX IF NOT EXISTS idx_suggestions_queue ON suggestions(status,id);
+CREATE TABLE IF NOT EXISTS suggestion_input (
+ user_id INTEGER PRIMARY KEY,
+ awaiting INTEGER NOT NULL DEFAULT 1
+);
 CREATE INDEX IF NOT EXISTS idx_deliveries_pending ON deliveries(status);
 """
 
+def synchronized(cls):
+    """Keep one SQLite connection safe across Bot API and public scanner threads."""
+    for name, method in tuple(vars(cls).items()):
+        if name.startswith("_") or not callable(method):
+            continue
+        @wraps(method)
+        def wrapped(self, *args, _method=method, **kwargs):
+            with self._lock:
+                return _method(self, *args, **kwargs)
+        setattr(cls, name, wrapped)
+    return cls
 
+
+@synchronized
 class Database:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(path)
+        self._lock = threading.RLock()
+        self.connection = sqlite3.connect(path, check_same_thread=False, timeout=10)
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.executescript(SCHEMA)
+
+    def set_waiting_for_suggestion(self, user_id: int, enabled: bool):
+        with self.connection:
+            if enabled:
+                self.connection.execute(
+                    "INSERT INTO suggestion_input(user_id,awaiting) VALUES (?,1) "
+                    "ON CONFLICT(user_id) DO UPDATE SET awaiting=1",
+                    (user_id,)
+                )
+            else:
+                self.connection.execute("DELETE FROM suggestion_input WHERE user_id=?", (user_id,))
+
+    def awaiting_suggestion(self, user_id: int) -> bool:
+        return bool(self.connection.execute(
+            "SELECT 1 FROM suggestion_input WHERE user_id=? AND awaiting=1", (user_id,)
+        ).fetchone())
+
+    def propose(self, user_id: int, username: str) -> tuple[int, str]:
+        from app.public_channels import normalize_channel
+        username = normalize_channel(username)
+        with self.connection:
+            existing = self.connection.execute(
+                "SELECT id,status FROM suggestions WHERE user_id=? AND username=?",
+                (user_id, username),
+            ).fetchone()
+            if existing:
+                return int(existing[0]), str(existing[1])
+            cursor = self.connection.execute(
+                "INSERT INTO suggestions(user_id,username) VALUES (?,?)",
+                (user_id,username),
+            )
+            return int(cursor.lastrowid), "pending"
+
+    def pending_suggestions(self, limit: int = 8, offset: int = 0):
+        return list(self.connection.execute(
+            "SELECT id,user_id,username,created_at FROM suggestions "
+            "WHERE status='pending' ORDER BY id LIMIT ? OFFSET ?",
+            (max(1,min(limit,30)),max(0,offset))
+        ))
+
+    def suggestion(self, suggestion_id: int):
+        return self.connection.execute(
+            "SELECT id,user_id,username,status FROM suggestions WHERE id=?",
+            (suggestion_id,)
+        ).fetchone()
+
+    def review_suggestion(self, suggestion_id: int, approve: bool):
+        """Atomic idempotent review; only approved suggestions enter the crawler."""
+        with self.connection:
+            row=self.connection.execute(
+                "SELECT id,user_id,username,status FROM suggestions WHERE id=?",
+                (suggestion_id,)
+            ).fetchone()
+            if not row or row[3] != "pending":
+                return None
+            next_status="approved" if approve else "rejected"
+            self.connection.execute(
+                "UPDATE suggestions SET status=?,reviewed_at=CURRENT_TIMESTAMP "
+                "WHERE id=? AND status='pending'",
+                (next_status,suggestion_id)
+            )
+            channel_id=self.add_public(row[2]) if approve else None
+            return (row[1],row[2],next_status,channel_id)
+
+    def admin_counts(self) -> dict:
+        tables={"users":"subscribers","sources":"sources","posts":"castings"}
+        result={key:self.connection.execute(
+            f"SELECT COUNT(*) FROM {table}"
+        ).fetchone()[0] for key,table in tables.items()}
+        result["pending"]=self.connection.execute(
+            "SELECT COUNT(*) FROM suggestions WHERE status='pending'"
+        ).fetchone()[0]
+        result["errors"]=self.connection.execute(
+            "SELECT COUNT(*) FROM public_state WHERE last_error IS NOT NULL"
+        ).fetchone()[0]
+        return result
 
     def add_public(self, username: str):
         from app.public_channels import normalize_channel, source_id
