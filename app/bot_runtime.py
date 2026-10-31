@@ -136,7 +136,13 @@ class Receiver:
             if user_id != self.owner_id:
                 return
             rows=self.db.public_status()
-            self.api.send(user_id,"\\n".join(f"{x[0]}: последний пост {x[1]}, ошибка {x[2] or 'нет'}" for x in rows)[:3700] or "Публичных каналов пока нет.")
+            lines=[
+                f"{x[0]} | пост №{x[1]} | на странице {x[7]}, новых {x[8]}, совпадений {x[9]}\n"
+                f"Проверен: {x[4] or 'ещё нет'} | успешно: {x[5] or 'ещё нет'}\n"
+                f"Ошибка: {x[2] or 'нет'}"
+                for x in rows
+            ]
+            self.api.send(user_id,"\n\n".join(lines)[:3800] or "Публичных каналов пока нет.")
         elif cmd=="/start":
             self.db.register(user_id)
             self.api.send(user_id,HELP + f"\n\nВаш Telegram ID: {user_id}" +
@@ -151,11 +157,14 @@ class Receiver:
             if user_id!=self.owner_id: return
             counts=self.db.admin_counts()
             feedback=self.db.feedback_stats()
+            deliveries=self.db.delivery_stats()
             self.api.send(user_id,
                 "🛡 Админка\nПользователей: {}\nИсточников: {}\nПубликаций: {}\nОшибок: {}\nПредложений: {}".format(
                     counts["users"],counts["sources"],counts["posts"],counts["errors"],counts["pending"]) +
                 "\n👍 Подходит: {}  👎 Не подходит: {}".format(
-                    feedback.get("relevant",0),feedback.get("irrelevant",0)),
+                    feedback.get("relevant",0),feedback.get("irrelevant",0)) +
+                "\nДоставлено: {} | ждут: {} | ошибок: {}".format(
+                    deliveries.get("sent",0),deliveries.get("pending",0),deliveries.get("failed",0)),
                 reply_markup={"inline_keyboard":[[{"text":"📥 Предложения","callback_data":"admin:queue:0"}]]})
         elif cmd=="/profile":
             self.db.register(user_id)
@@ -374,7 +383,7 @@ class Receiver:
                     log.warning("Telegram Bot API rate limit; pausing delivery")
                     break
                 else:
-                    self.db.mark_delivery(uid,chat_id,message_id,"failed",str(exc.code))
+                    self.db.mark_delivery(uid,chat_id,message_id,"pending",str(exc.code))
 
 async def run():
     token=os.getenv("BOT_TOKEN","").strip()

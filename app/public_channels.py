@@ -158,10 +158,13 @@ async def monitor_public(db, receiver, *, interval_seconds: int = 1200,
                 LOG.exception("Unexpected public preview failure for %s", username)
                 continue
             cursor = db.public_cursor(chat_id)
+            previous_matched = db.count_source_matches(chat_id)
+            new_posts = 0
             fresh_cutoff = int(time()) - lookback_hours * 3600
             for post in posts:
                 if post.message_id <= cursor:
                     continue
+                new_posts += 1
                 if cursor == 0 and post.timestamp is not None and post.timestamp < fresh_cutoff:
                     db.advance_public_cursor(chat_id, post.message_id)
                     continue
@@ -170,6 +173,10 @@ async def monitor_public(db, receiver, *, interval_seconds: int = 1200,
                     "message_id":post.message_id, "text":post.text, "date":post.timestamp,
                 })
                 db.advance_public_cursor(chat_id, post.message_id)
+            matched = max(0,db.count_source_matches(chat_id)-previous_matched)
+            db.set_scan_stats(chat_id,posts=len(posts),new_posts=new_posts,matched=matched)
             db.update_public_status(chat_id, error=None, retry_after=interval_seconds)
+            LOG.info("Public source %s: visible=%s new=%s matched=%s",
+                     username,len(posts),new_posts,matched)
             await asyncio.sleep(2)
         await asyncio.sleep(30)
