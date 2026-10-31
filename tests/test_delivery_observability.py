@@ -38,10 +38,10 @@ class RetryTests(unittest.TestCase):
             chat_id=db.add_public("moscowfilms")
             db.set_scan_stats(chat_id,posts=18,new_posts=3,matched=1)
             x=db.public_status()[0]
-            self.assertEqual(x[7:10],(18,3,1))
+            self.assertEqual(x[6:9],(18,3,1))
             db.close()
             db=Database(path)
-            self.assertEqual(db.public_status()[0][7:10],(18,3,1))
+            self.assertEqual(db.public_status()[0][6:9],(18,3,1))
             db.close()
 
 if __name__=="__main__": unittest.main()
