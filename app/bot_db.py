@@ -99,6 +99,21 @@ class Database:
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.executescript(SCHEMA)
 
+    def set_profile_prompt(self, user_id: int, field: str | None):
+        with self.connection:
+            key="profile_prompt:{}".format(user_id)
+            if field:
+                self.connection.execute(
+                    "INSERT INTO meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (key,field))
+            else:
+                self.connection.execute("DELETE FROM meta WHERE key=?",(key,))
+
+    def profile_prompt(self, user_id: int) -> str | None:
+        row=self.connection.execute("SELECT value FROM meta WHERE key=?",
+                                    ("profile_prompt:{}".format(user_id),)).fetchone()
+        return row[0] if row else None
+
     def set_waiting_for_suggestion(self, user_id: int, enabled: bool):
         with self.connection:
             if enabled:

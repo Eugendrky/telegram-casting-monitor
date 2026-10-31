@@ -59,6 +59,15 @@ def parse_setting(command: str, value: str):
             return "height_cm",number
     return None
 
+def profile_menu():
+    return {"inline_keyboard":[
+        [{"text":"🎂 Возраст","callback_data":"profile:age"},
+         {"text":"📍 Город","callback_data":"profile:city"}],
+        [{"text":"👤 Пол","callback_data":"profile:gender"},
+         {"text":"📏 Рост","callback_data":"profile:height"}],
+        [{"text":"🏠 Главное меню","callback_data":"menu:home"}]
+    ]}
+
 def menu():
     return {"inline_keyboard":[
         [{"text":"📨 Предложить канал","callback_data":"suggest:start"},
@@ -90,6 +99,17 @@ class Receiver:
         if not isinstance(user_id,int): return
         text=(message.get("text") or "").strip()
         if not text.startswith("/"):
+            prompt=self.db.profile_prompt(user_id)
+            if prompt:
+                parsed=parse_setting("/"+prompt,text)
+                if parsed is None:
+                    self.api.send(user_id,"Не удалось распознать значение. Для отмены отправьте /cancel.")
+                else:
+                    self.db.set_profile_prompt(user_id,None)
+                    self.db.update_profile(user_id,*parsed)
+                    self.api.send(user_id,"✅ Сохранено.\n"+profile_text(self.db.profile(user_id)),
+                                  reply_markup=profile_menu())
+                return
             if self.db.awaiting_suggestion(user_id):
                 self.db.set_waiting_for_suggestion(user_id,False)
                 self.submit_suggestion(user_id,text)
@@ -97,7 +117,11 @@ class Receiver:
         cmd,*rest=text.split(maxsplit=1)
         cmd=cmd.split("@")[0].lower()
         arg=rest[0].strip() if rest else ""
-        if cmd=="/addsource":
+        if cmd=="/cancel":
+            self.db.set_profile_prompt(user_id,None)
+            self.db.set_waiting_for_suggestion(user_id,False)
+            self.api.send(user_id,"Действие отменено.",reply_markup=menu())
+        elif cmd=="/addsource":
             if self.owner_id <= 0 or user_id != self.owner_id:
                 self.api.send(user_id,"Добавлять каналы может администратор.")
                 return
@@ -132,8 +156,17 @@ class Receiver:
                 reply_markup={"inline_keyboard":[[{"text":"📥 Предложения","callback_data":"admin:queue:0"}]]})
         elif cmd=="/profile":
             self.db.register(user_id)
-            self.api.send(user_id,profile_text(self.db.profile(user_id)))
+            self.api.send(user_id,profile_text(self.db.profile(user_id)),reply_markup=profile_menu())
         elif cmd in ("/city","/gender","/age","/height"):
+            if not arg:
+                field=cmd[1:]
+                self.db.set_profile_prompt(user_id,field)
+                prompts={"city":"Напишите город, например Москва.",
+                         "gender":"Укажите male, female или any.",
+                         "age":"Сколько вам лет? Напишите число от 4 до 95.",
+                         "height":"Укажите рост в сантиметрах, от 100 до 230."}
+                self.api.send(user_id,prompts[field]+" Для отмены /cancel")
+                return
             parsed=parse_setting(cmd,arg)
             if parsed is None: self.api.send(user_id,"Неверное значение. Используйте /help")
             else:
@@ -204,6 +237,17 @@ class Receiver:
             self.api.send(user_id,"Пришлите ссылку на публичный Telegram-канал.")
         elif data=="menu:sources":
             self.api.send(user_id,self.source_list(user_id))
+        elif data.startswith("profile:"):
+            field=data.partition(":")[2]
+            if field in ("city","age","height","gender"):
+                self.db.register(user_id)
+                self.db.set_profile_prompt(user_id,field)
+                prompts={"city":"Напишите ваш город.","age":"Сколько вам лет?",
+                         "height":"Укажите рост в сантиметрах.",
+                         "gender":"Укажите male, female или any."}
+                self.api.send(user_id,prompts[field]+" Отмена: /cancel")
+        elif data=="menu:home":
+            self.api.send(user_id,HELP,reply_markup=menu())
         elif data=="menu:profile":
             self.db.register(user_id)
             self.api.send(user_id,profile_text(self.db.profile(user_id)))
