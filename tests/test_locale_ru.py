@@ -37,7 +37,7 @@ class LanguageTests(unittest.TestCase):
         self.assertIn("числовой код источника",self.send(123,"/follow"))
     def test_suggestion_status(self):
         self.send(123,"/suggest @castinggroup")
-        self.assertIn("ожидает проверки",self.send(123,"/suggest @castinggroup"))
+        self.assertIn("отправлен на проверку",self.send(123,"/suggest @castinggroup"))
         self.assertEqual(suggestion_status("approved"),"одобрен")
         self.assertEqual(suggestion_status("rejected"),"отклонён")
     def test_diagnostics(self):
