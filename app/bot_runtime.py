@@ -9,6 +9,7 @@ from app.bot_db import Database
 from app.bot_http import BotAPI, TelegramError
 from app.config import Profile
 from app.matcher import match_post
+from app.casting_quality import actionable
 from app.public_channels import normalize_channel, monitor_public
 from app.locale_ru import suggestion_status, readable_time, source_error
 
@@ -239,11 +240,21 @@ class Receiver:
                 self.db.follow(user_id,chat_id,cmd=="/follow")
                 self.api.send(user_id,"Подписка изменена.")
         elif cmd=="/castings":
+            self.refresh_user(user_id)
+            self.flush()
             rows=self.db.latest(user_id)
             lines=[f"🎬 {title}\n{body[:190]}\n{url or ''}" for title,body,url in rows]
             self.api.send(user_id,"\n\n".join(lines)[:3800] if lines else "Пока нет подходящих кастингов.")
         elif cmd=="/status":
-            self.api.send(user_id,f"Бот работает. Источников: {len(self.db.sources())}. Для настройки /profile")
+            states=self.db.public_status()
+            checked=sum(1 for row in states if row[4])
+            failed=sum(1 for row in states if row[2])
+            self.api.send(user_id,
+                f"Бот работает. В каталоге {len(self.db.sources())} источников. "
+                f"Веб-проверка проводилась для {checked} из {len(states)} публичных источников. "
+                f"С ошибками: {failed}.\n"
+                "Подборка обновляется после проверки публичных страниц. "
+                "Не все Telegram-группы предоставляют сообщения через веб-страницы.")
         else: self.api.send(user_id,HELP)
 
     def submit_suggestion(self, user_id: int, raw: str):
@@ -306,6 +317,8 @@ class Receiver:
             self.db.register(user_id)
             self.api.send(user_id,profile_text(self.db.profile(user_id)))
         elif data=="menu:castings":
+            self.refresh_user(user_id)
+            self.flush()
             rows=self.db.latest(user_id)
             self.api.send(user_id,"\n\n".join(
                 "🎬 {}\n{}\n{}".format(title,body[:180],url or "") for title,body,url in rows)[:3700]
@@ -371,6 +384,29 @@ class Receiver:
             except TelegramError as exc:
                 log.warning("Owner notification failed: %s",exc.code)
 
+    def refresh_user(self, user_id: int, limit: int = 10) -> int:
+        """Recheck recently archived posts after a profile change without web access."""
+        self.db.register(user_id)
+        profile_data = self.db.profile(user_id)
+        if not profile_data or not profile_data["active"]:
+            return 0
+        profile = Profile(
+            city=profile_data["city"], gender=profile_data["gender"],
+            age=profile_data["age"], height_cm=profile_data["height_cm"],
+            kids_ok=False, include_keywords=[],
+            exclude_keywords=["набор закрыт","уже набрали","итоги кастинга"],
+        )
+        queued = 0
+        for chat_id,message_id,title,body,url,posted_at in self.db.recent_posts():
+            if queued >= limit:
+                break
+            if not self.db.following(user_id,chat_id):
+                continue
+            if match_post(body,profile).matched:
+                self.db.queue(user_id,chat_id,message_id)
+                queued += 1
+        return queued
+
     def handle_post(self, message: dict):
         chat=message.get("chat") or {}
         chat_id=chat.get("id")
@@ -385,14 +421,18 @@ class Receiver:
         if not body.strip(): return
         message_id=message.get("message_id")
         if not isinstance(message_id,int): return
+        eligible, reason = actionable(body)
+        if not eligible:
+            return
+        # Archive each fresh actionable post even when no subscriber currently fits.
+        self.db.record_post(chat_id,message_id,source[1],body,
+                            link_for(chat,message_id),message.get("date"))
         for uid,city,gender,age,height in self.db.subscribers(chat_id):
             profile=Profile(city=city,gender=gender,age=age,height_cm=height,
                             kids_ok=False,include_keywords=[],exclude_keywords=[
                             "набор закрыт","уже набрали","итоги кастинга"])
             result=match_post(body,profile)
             if result.matched:
-                self.db.record_post(chat_id,message_id,source[1],body,
-                                    link_for(chat,message_id),message.get("date"))
                 self.db.queue(uid,chat_id,message_id)
 
     def process(self, update: dict):

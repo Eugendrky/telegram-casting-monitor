@@ -392,6 +392,20 @@ class Database:
                 (user_id,chat_id,int(enabled))
             )
 
+
+    def recent_posts(self, *, lookback_hours: int = 48, limit: int = 150):
+        """Return already discovered public posts for profile re-evaluation."""
+        threshold = int(time.time()) - max(1, min(lookback_hours, 168)) * 3600
+        return list(self.connection.execute(
+            """SELECT c.chat_id,c.message_id,c.title,c.body,c.url,c.posted_at
+               FROM castings c JOIN sources s ON s.chat_id=c.chat_id
+               WHERE s.enabled=1 AND s.joined=1
+                 AND COALESCE(c.posted_at, CAST(strftime('%s',c.created_at) AS INTEGER)) >= ?
+               ORDER BY COALESCE(c.posted_at, CAST(strftime('%s',c.created_at) AS INTEGER)) DESC,
+                        c.message_id DESC LIMIT ?""",
+            (threshold, max(1, min(limit,500))),
+        ))
+
     def record_post(self, chat_id: int, message_id: int, title: str,
                     body: str, url: str | None, posted_at: int | None):
         with self.connection:

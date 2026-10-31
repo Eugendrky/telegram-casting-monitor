@@ -133,6 +133,7 @@ async def monitor_public(db, receiver, *, interval_seconds: int = 1200,
     """Sequential polling, durable cursor, bounded web activity and safe error backoff."""
     from time import time
     interval_seconds = max(900, interval_seconds)
+    LOG.info("Public scanning enabled: %s selected sources", len(db.public_sources()))
     while True:
         for chat_id, title, kind, enabled, joined, username in db.public_sources():
             if not (enabled and joined and username):
@@ -162,17 +163,23 @@ async def monitor_public(db, receiver, *, interval_seconds: int = 1200,
             new_posts = 0
             fresh_cutoff = int(time()) - lookback_hours * 3600
             for post in posts:
-                if post.message_id <= cursor:
+                is_new = post.message_id > cursor
+                if is_new:
+                    new_posts += 1
+                # The recent visible window is re-evaluated at each scheduled scan,
+                # so changing a profile does not permanently lose older posts.
+                if post.timestamp is not None and post.timestamp < fresh_cutoff:
+                    if is_new:
+                        db.advance_public_cursor(chat_id,post.message_id)
                     continue
-                new_posts += 1
-                if cursor == 0 and post.timestamp is not None and post.timestamp < fresh_cutoff:
-                    db.advance_public_cursor(chat_id, post.message_id)
+                if post.timestamp is None and not is_new:
                     continue
                 receiver.handle_post({
                     "chat": {"id":chat_id, "title":title, "type":"channel", "username":username},
                     "message_id":post.message_id, "text":post.text, "date":post.timestamp,
                 })
-                db.advance_public_cursor(chat_id, post.message_id)
+                if is_new:
+                    db.advance_public_cursor(chat_id, post.message_id)
             matched = max(0,db.count_source_matches(chat_id)-previous_matched)
             db.set_scan_stats(chat_id,posts=len(posts),new_posts=new_posts,matched=matched)
             db.update_public_status(chat_id, error=None, retry_after=interval_seconds)
