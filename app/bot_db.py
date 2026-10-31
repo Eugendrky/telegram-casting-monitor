@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 import threading
 from functools import wraps
 from pathlib import Path
@@ -107,6 +108,21 @@ class Database:
         self.connection = sqlite3.connect(path, check_same_thread=False, timeout=10)
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.executescript(SCHEMA)
+        self._migrate("public_state", {
+            "checked_at":"INTEGER NOT NULL DEFAULT 0",
+            "last_success_at":"INTEGER NOT NULL DEFAULT 0",
+            "last_posts":"INTEGER NOT NULL DEFAULT 0",
+            "last_new":"INTEGER NOT NULL DEFAULT 0",
+            "last_matched":"INTEGER NOT NULL DEFAULT 0",
+        })
+        self._migrate("deliveries", {"next_retry":"INTEGER NOT NULL DEFAULT 0"})
+
+    def _migrate(self, table: str, fields: dict):
+        existing={row[1] for row in self.connection.execute(f"PRAGMA table_info({table})")}
+        with self.connection:
+            for column, sql_type in fields.items():
+                if column not in existing:
+                    self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
 
     def add_feedback(self, user_id: int, chat_id: int, message_id: int, verdict: str) -> bool:
         if verdict not in ("relevant","irrelevant"):
@@ -256,17 +272,28 @@ class Database:
         return bool(row and row[0]<=int(time()))
 
     def update_public_status(self,chat_id,error=None,retry_after=1200):
-        import time
         with self.connection:
+            now=int(time.time())
             self.connection.execute(
-                "UPDATE public_state SET last_error=?,next_scan=? WHERE chat_id=?",
-                (error,int(time())+retry_after,chat_id))
+                "UPDATE public_state SET last_error=?,next_scan=?,checked_at=? WHERE chat_id=?",
+                (error,now+retry_after,now,chat_id))
 
     def public_status(self):
         return list(self.connection.execute(
-            """SELECT s.title,p.cursor,p.last_error,p.next_scan FROM sources s
-               JOIN public_state p ON p.chat_id=s.chat_id ORDER BY s.title"""
+            """SELECT s.title,p.cursor,p.last_error,p.next_scan,
+                      p.checked_at,p.last_success_at,p.last_posts,p.last_new,p.last_matched
+               FROM sources s JOIN public_state p ON p.chat_id=s.chat_id
+               ORDER BY CASE WHEN p.last_error IS NULL THEN 1 ELSE 0 END, s.title"""
         ))
+
+    def set_scan_stats(self, chat_id: int, *, posts: int, new_posts: int, matched: int):
+        with self.connection:
+            now=int(time.time())
+            self.connection.execute(
+                """UPDATE public_state SET checked_at=?,last_success_at=?,
+                   last_posts=?,last_new=?,last_matched=? WHERE chat_id=?""",
+                (now,now,posts,new_posts,matched,chat_id)
+            )
 
     def close(self):
         self.connection.close()
@@ -387,19 +414,41 @@ class Database:
                FROM deliveries d JOIN castings c
                  ON c.chat_id=d.chat_id AND c.message_id=d.message_id
                JOIN subscribers s ON s.user_id=d.user_id
-               WHERE d.status='pending' AND s.active=1
-               ORDER BY c.created_at,d.rowid LIMIT ?""",(limit,)
+               WHERE d.status='pending' AND d.attempts<4 AND d.next_retry<=?
+                 AND s.active=1
+               ORDER BY c.created_at,d.rowid LIMIT ?""",(int(time.time()),limit)
         ).fetchall()
+
+    def count_source_matches(self, chat_id: int) -> int:
+        return int(self.connection.execute(
+            "SELECT COUNT(*) FROM castings WHERE chat_id=?",(chat_id,)
+        ).fetchone()[0])
+
+    def delivery_stats(self):
+        return dict(self.connection.execute(
+            "SELECT status,COUNT(*) FROM deliveries GROUP BY status"
+        ).fetchall())
 
     def mark_delivery(self, user_id: int, chat_id: int, message_id: int,
                       status: str, error: str | None = None):
         if status not in {"sent","pending","blocked","failed"}:
             raise ValueError("invalid delivery status")
         with self.connection:
+            row=self.connection.execute(
+                "SELECT attempts FROM deliveries WHERE user_id=? AND chat_id=? AND message_id=?",
+                (user_id,chat_id,message_id)
+            ).fetchone()
+            if row is None:
+                return
+            attempts=row[0]+1
+            if status=="pending" and attempts>=4:
+                status="failed"
+            next_retry=(int(time.time())+min(3600,60*(2**(attempts-1)))
+                        if status=="pending" else 0)
             self.connection.execute(
-                """UPDATE deliveries SET status=?,attempts=attempts+1,last_error=?
+                """UPDATE deliveries SET status=?,attempts=?,last_error=?,next_retry=?
                    WHERE user_id=? AND chat_id=? AND message_id=?""",
-                (status,error,user_id,chat_id,message_id)
+                (status,attempts,error,next_retry,user_id,chat_id,message_id)
             )
 
     def latest(self, user_id: int, limit: int = 8):
