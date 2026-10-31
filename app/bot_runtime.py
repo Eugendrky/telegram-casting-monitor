@@ -51,8 +51,6 @@ def parse_setting(command: str, value: str):
 
 class Receiver:
     def __init__(self, api: BotAPI, db: Database, owner_id: int):
-        if owner_id <= 0:
-            raise ValueError("BOT_OWNER_ID must be set to protect source approvals")
         self.api,self.db,self.owner_id=api,db,owner_id
 
     def source_list(self,user_id: int):
@@ -80,7 +78,8 @@ class Receiver:
         arg=rest[0].strip() if rest else ""
         if cmd=="/start":
             self.db.register(user_id)
-            self.api.send(user_id,HELP)
+            self.api.send(user_id,HELP + f"\n\nВаш Telegram ID: {user_id}" +
+                          ("\nУкажите BOT_OWNER_ID в Railway, чтобы управлять источниками." if self.owner_id <= 0 else ""))
         elif cmd=="/help": self.api.send(user_id,HELP)
         elif cmd=="/profile":
             self.db.register(user_id)
@@ -127,7 +126,7 @@ class Receiver:
         joined=status in ("member","administrator")
         self.db.set_source(chat["id"],chat.get("title","Источник"),
                            chat.get("username"),chat.get("type"),joined)
-        if joined:
+        if joined and self.owner_id > 0:
             try:
                 self.api.send(self.owner_id,f"Новый источник: {chat.get('title')}\n"
                               f"ID: {chat['id']}\nЧтобы разрешить обработку: /enable {chat['id']}")
