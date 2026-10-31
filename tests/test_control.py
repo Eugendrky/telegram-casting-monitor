@@ -11,7 +11,7 @@ def _settings() -> Settings:
         api_id=123, api_hash="hash", session="session",
         profile=Profile(city="Москва", gender="male", age=28, height_cm=180, kids_ok=False),
         scan_mode="all", lookback_hours=36, messages_per_chat=40,
-        scan_interval_minutes=20, max_notify_per_cycle=25, chat_delay_seconds=0.8,
+        scan_interval_minutes=180, max_notify_per_cycle=8, chat_delay_seconds=3,
         sqlite_path=Path("/tmp/seen.db"), notify_peer="me", port=8080,
         log_level="INFO", bot_token="bot-token", bot_owner_id=1234,
     )
@@ -21,11 +21,12 @@ class BotTextTests(unittest.TestCase):
     def test_status_before_any_run(self) -> None:
         text = status_text(ScanState(), _settings())
         self.assertIn("ещё не запускался", text)
-        self.assertIn("20 мин", text)
+        self.assertIn("180 мин", text)
 
     def test_status_during_scan(self) -> None:
         state = ScanState(running=True, cycles=2, last_started=datetime.now(timezone.utc), last_sent=3)
-        text = status_text(state, _settings())
+        settings = _settings().__class__(**{**_settings().__dict__, "scan_enabled": True})
+        text = status_text(state, settings)
         self.assertIn("идёт поиск", text)
         self.assertIn("Проверок: 2", text)
 

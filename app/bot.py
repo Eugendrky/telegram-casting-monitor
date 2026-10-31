@@ -41,6 +41,7 @@ class BotController:
         self.store = store
         self._sources_cache: list[tuple[int, str, str]] | None = None
         self._sources_loaded_at = 0.0
+        self._source_entities = {}
 
     @staticmethod
     def _menu() -> list[list[Button]]:
@@ -78,10 +79,12 @@ class BotController:
                 and time.monotonic() - self._sources_loaded_at < CACHE_SECONDS):
             return self._sources_cache
         sources = []
+        self._source_entities = {}
         async for dialog in self.user_client.iter_dialogs():
             if is_source_dialog(dialog):
                 kind = "👥" if dialog.is_group else "📣"
                 sources.append((dialog.id, dialog.name or "Без названия", kind))
+                self._source_entities[dialog.id] = dialog.entity
         sources.sort(key=lambda item: (item[1].casefold(), item[0]))
         self._sources_cache = sources
         self._sources_loaded_at = time.monotonic()
@@ -155,8 +158,7 @@ class BotController:
                     await event.answer("Источник недоступен. Обнови список.", alert=True)
                     return
                 # Save the peer from the explicit source-list action for future direct reads.
-                entity = next((d.entity async for d in self.user_client.iter_dialogs()
-                               if d.id == candidate[0]), None)
+                entity = self._source_entities.get(candidate[0])
                 if entity is None:
                     await event.answer("Обнови список источников", alert=True)
                     return

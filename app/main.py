@@ -8,7 +8,6 @@ from datetime import datetime, timedelta, timezone
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError, RPCError, AuthKeyError, UnauthorizedError
 from telethon.tl.types import InputPeerChannel, InputPeerChat
-from telethon.tl.custom.dialog import Dialog
 from telethon.tl.custom.message import Message
 
 from app.bot import BotController
@@ -19,13 +18,12 @@ from app.links import message_link
 from app.matcher import match_post
 from app.ai import review_casting
 from app.store import Store
-from app.sources import source_allowed
 
 log = logging.getLogger("castings")
 Notify = Callable[[str], Awaitable[None]]
 
 
-def _format_notice(dialog: Dialog, message: Message, reasons: list[str], score: int) -> str:
+def _format_notice(dialog, message: Message, reasons: list[str], score: int) -> str:
     text = (message.raw_text or "").strip()
     if len(text) > 1800:
         text = text[:1800] + "…"
