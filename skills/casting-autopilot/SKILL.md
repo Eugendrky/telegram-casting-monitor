@@ -1,15 +1,17 @@
 ---
 name: casting-autopilot
-description: Guide development and validation of a Telegram casting monitor that fetches explicitly approved public web-visible channel posts, matches them against actors' profiles, delivers matching casting announcements once per user and keeps diagnostics. Use when working on casting extraction, relevance filtering, source scanning, retries, or feedback-driven quality checks.
+description: Guide development and testing of a Telegram casting monitor that reads only administrator-approved public web-visible posts, extracts audition requirements, matches actors' profiles, avoids repeated notifications, handles inaccessible public groups, and maintains Russian-language diagnostics. Use when improving source collection, role relevance, user feedback, delivery, or monitoring regressions.
 ---
 
 # Casting autopilot
 
-1. Fetch only administrator-approved, publicly viewable Telegram sources. Do not assume third-party private chats or public groups with inaccessible previews can be read.
-2. Poll sequentially with backoff; provide a rate-limited manual-scan button. Never bypass Telegram restrictions or source cooldowns.
-3. Store the source, post ID, publication date, link and text. Consider the configured recent-post window (48 hours by default).
-4. Exclude closed castings, expired deadlines, courses, irrelevant news and actor resumes. Match city, age, gender and height only to explicitly stated requirements; do not mix different roles.
-5. Archive suitable posts even if nobody currently matches, then re-evaluate after profile updates. Deduplicate by (user, source, post ID), keeping sent history across restarts and manual scans.
-6. Send matches in Russian with source links. Store feedback from «Подходит» / «Не подходит». Use feedback as evaluation evidence; do not claim the model retrains itself.
-7. Maintain admin diagnostics: last scan time, posts found, matched and error. Test rate limits, unavailable previews, changed profiles and delivery failures.
-8. A SKILL.md guides developers and assistants working on this codebase. The runtime scans and matches using Python. Real AI analysis requires an explicit model API and deployment configuration.
+1. First check source availability and `public_state`. Distinguish a successful scan with no matches from a Telegram group whose public web page exposes no posts. Do not claim access to member-only content via a public link.
+2. Poll approved public web-visible sources only, honoring rate limits and cooldowns. Manual scans must not bypass backoff.
+3. Preserve original username, post ID, date, text and permalink; use a default 48-hour freshness window when available.
+4. Exclude courses, expired calls, closed selections, unrelated news and resumes. Missing role information is unknown, not an invented requirement.
+5. Match each role's gender, age, city and height together. Use positive and negative Russian-language examples.
+6. Archive candidates irrespective of currently matching users; re-evaluate after profile changes. Deduplicate per user/source/post and suppress exact-text reposts across approved channels while retaining distinct role texts.
+7. Keep sent/pending/failed records durably. Respect retry bounds, never automatically resend successful deliveries. Collect explicit user feedback.
+8. Provide Russian admin diagnostics for source availability, last scan, visible posts, matches and delivery outcomes. Inaccessible previews are not evidence that the channel contains no castings.
+9. Test migrations, reposts, rate limits, missing group previews, role matching and retries before deployment.
+10. This Skill guides development, not runtime execution or AI model training. Real model-based relevance scoring needs its own explicit integration and safety tests. Do not send Telegram credentials to an AI model.
