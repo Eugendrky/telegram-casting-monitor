@@ -286,6 +286,40 @@ class Database:
                ORDER BY CASE WHEN p.last_error IS NULL THEN 1 ELSE 0 END, s.title"""
         ))
 
+    def request_manual_scan(self, cooldown_seconds: int = 900):
+        """Reschedule due public sources for a single bounded manual scan.
+
+        Never bypass Telegram's backoff or failed-source retry, and rate-limit
+        button presses globally across all users and process restarts.
+        Returns (scheduled_count, retry_after_seconds).
+        """
+        cooldown_seconds = max(900, int(cooldown_seconds))
+        now = int(time.time())
+        with self.connection:
+            row=self.connection.execute(
+                "SELECT value FROM meta WHERE key='last_manual_scan'"
+            ).fetchone()
+            last=int(row[0]) if row else 0
+            if now < last+cooldown_seconds:
+                return 0, last+cooldown_seconds-now
+            ready=list(self.connection.execute(
+                """SELECT p.chat_id FROM public_state p
+                   JOIN sources s ON s.chat_id=p.chat_id
+                   WHERE s.enabled=1 AND s.joined=1 AND s.kind='public'
+                     AND (p.checked_at=0 OR p.checked_at<=?)
+                     AND (p.last_error IS NULL OR p.last_error='')
+                """,(now-cooldown_seconds,)
+            ))
+            if not ready:
+                return 0, cooldown_seconds
+            for (chat_id,) in ready:
+                self.connection.execute(
+                    "UPDATE public_state SET next_scan=0 WHERE chat_id=?",(chat_id,))
+            self.connection.execute(
+                """INSERT INTO meta(key,value) VALUES ('last_manual_scan',?)
+                   ON CONFLICT(key) DO UPDATE SET value=excluded.value""",(str(now),))
+            return len(ready),0
+
     def set_scan_stats(self, chat_id: int, *, posts: int, new_posts: int, matched: int):
         with self.connection:
             now=int(time.time())
