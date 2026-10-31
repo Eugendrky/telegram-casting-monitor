@@ -21,7 +21,7 @@ class LanguageTests(unittest.TestCase):
         self.tmp.cleanup()
     def send(self,user_id,message):
         self.bot.handle_private({"from":{"id":user_id},"text":message})
-        return self.api.messages[-1][1]
+        return next(text for target,text,_ in reversed(self.api.messages) if target==user_id)
     def test_start_and_help(self):
         text=self.send(123,"/start")
         self.assertIn("Поиск кастингов",text)
