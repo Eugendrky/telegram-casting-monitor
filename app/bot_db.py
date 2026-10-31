@@ -115,6 +115,9 @@ class Database:
             "last_posts":"INTEGER NOT NULL DEFAULT 0",
             "last_new":"INTEGER NOT NULL DEFAULT 0",
             "last_matched":"INTEGER NOT NULL DEFAULT 0",
+            "client_cursor":"INTEGER NOT NULL DEFAULT 0",
+            "client_next_scan":"INTEGER NOT NULL DEFAULT 0",
+            "client_checked_at":"INTEGER NOT NULL DEFAULT 0",
         })
         self._migrate("deliveries", {"next_retry":"INTEGER NOT NULL DEFAULT 0"})
         self._migrate("castings", {"fingerprint":"TEXT"})
@@ -267,6 +270,53 @@ class Database:
             "SELECT chat_id,title,kind,enabled,joined,username FROM sources WHERE kind='public' ORDER BY title"
         ))
 
+    def client_cursor(self, chat_id: int) -> int:
+        row=self.connection.execute(
+            "SELECT client_cursor FROM public_state WHERE chat_id=?",(chat_id,)
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def advance_client_cursor(self, chat_id: int, message_id: int):
+        with self.connection:
+            self.connection.execute(
+                "UPDATE public_state SET client_cursor=MAX(client_cursor,?) WHERE chat_id=?",
+                (message_id,chat_id)
+            )
+
+    def should_scan_client(self, chat_id: int, *, now: int | None=None):
+        now=int(time.time()) if now is None else int(now)
+        row=self.connection.execute(
+            "SELECT client_next_scan FROM public_state WHERE chat_id=?",(chat_id,)
+        ).fetchone()
+        return bool(row and row[0]<=now)
+
+    def update_client_status(self, chat_id: int, *, error: str | None,
+                             retry_after: int=1800, now: int | None=None):
+        now=int(time.time()) if now is None else int(now)
+        delay=max(900,int(retry_after))
+        with self.connection:
+            self.connection.execute(
+                """UPDATE public_state
+                   SET client_next_scan=?,client_checked_at=?,next_scan=?,
+                       checked_at=?,last_error=?
+                   WHERE chat_id=?""",
+                (now+delay,now,now+delay,now,error,chat_id)
+            )
+
+    def client_scan_completed(self, chat_id: int, *, scanned: int,new_posts: int,
+                              matched: int,interval: int=1800,
+                              now: int | None=None):
+        now=int(time.time()) if now is None else int(now)
+        with self.connection:
+            self.connection.execute(
+                """UPDATE public_state SET client_next_scan=?,client_checked_at=?,
+                   next_scan=?,checked_at=?,last_success_at=?,last_error=NULL,
+                   last_posts=?,last_new=?,last_matched=?
+                   WHERE chat_id=?""",
+                (now+max(900,int(interval)),now,now+max(900,int(interval)),now,
+                 now,scanned,new_posts,matched,chat_id)
+            )
+
     def public_cursor(self,chat_id):
         row=self.connection.execute("SELECT cursor FROM public_state WHERE chat_id=?",(chat_id,)).fetchone()
         return row[0] if row else 0
@@ -291,7 +341,7 @@ class Database:
 
     def public_status(self):
         return list(self.connection.execute(
-            """SELECT s.title,p.cursor,p.last_error,p.next_scan,
+            """SELECT s.title,CASE WHEN p.client_checked_at>0 THEN p.client_cursor ELSE p.cursor END,p.last_error,p.next_scan,
                       p.checked_at,p.last_success_at,p.last_posts,p.last_new,p.last_matched
                FROM sources s JOIN public_state p ON p.chat_id=s.chat_id
                ORDER BY CASE WHEN p.last_error IS NULL THEN 1 ELSE 0 END, s.title"""
