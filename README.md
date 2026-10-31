@@ -1,39 +1,29 @@
-# Casting Radar: public channel monitoring
+# Casting Radar: автономный мониторинг публичных каналов
 
-Telegram Bot API delivers notifications and private profile settings. Selected public channels are fetched through their openly accessible `https://t.me/s/<username>` previews. No user account session, Telegram Desktop keys, or membership in those channels.
+Бот проверяет публичные веб-страницы Telegram (`https://t.me/s/username`), сохраняет новые объявления, отбирает по профилю пользователя и отправляет уведомления через Telegram Bot API. Личный аккаунт и ключи Telegram Desktop не используются.
 
-## What works
+## Каталог каналов
 
-- Owner sends `/addsource @publicchannel` or `/addsource https://t.me/publicchannel`.
-- The bot polls public previews sequentially, no more often than every 15 minutes; default 30 minutes. This is not a real-time feed.
-- New text posts are parsed, deduplicated by channel and post ID and matched to registered user profiles.
-- `/city`, `/age`, `/gender`, `/height`, `/pause`, `/resume`, `/sources`, `/follow`, `/unfollow`, `/castings`.
-- `/publicstatus`: the owner's source status, last processed post and latest error.
-- SQLite persists profiles, sources, post cursors, matches, and delivery statuses on a mounted volume.
+Каталог формирует администратор. Отдельно от автоматической проверки действует очередь предложений.
 
-## Limits and safeguards
+- `/addsource @username`: добавить публичный канал (администратор)
+- `/sources`: список отслеживаемых источников
+- `/suggest` или кнопка «📨 Предложить канал»: пользователь присылает ссылку
+- `/admin`: статистика, кнопка перехода к очереди предложений
+- `/publicstatus`: последняя публикация и ошибка каждого источника
+- «Одобрить» / «Отклонить»: действия только администратора, повторные нажатия безопасны
+- `/city`, `/gender`, `/age`, `/height`, `/follow`, `/unfollow`, `/castings`, `/pause`, `/resume`: настройки подписчика
 
-- Supports **public channels with web-visible posts only**. Closed groups, invite links, protected content and private chats cannot be read with this approach.
-- Availability and amount of public web history vary; missed posts are possible if a channel posts faster than the polling cadence.
-- Telegram may rate-limit or change the webpage. On 429 the monitor pauses source reads and does not try to bypass restrictions. No proxy rotation, captcha bypass or fake client identity.
-- Monitoring a channel starts only after the owner's explicit source command. No bulk discovery or crawling of subscriptions.
-- Posts are parsed as published. Automatic AI interpretation is optional future work and not enabled by this runtime; current match uses deterministic profile filters.
-- For privacy, only public posts should be added; regular Telegram members do not need to share account sessions or credentials.
+Три начальных канала: `@castingiot4000r`, `@moscowfilms`, `@kinocekh`. Они автоматически добавляются в каталог при первом запуске. Фактическая доступность текстов проверяется на первом обходе и видна в `/publicstatus`.
 
-## Railway configuration
+## Ограничения
 
-`BOT_TOKEN`: token from BotFather.
-`BOT_OWNER_ID`: Telegram ID of owner (send `/start` to retrieve it before adding sources).
-`SQLITE_PATH=/data/castings.db`.
-`PUBLIC_SCAN_INTERVAL_SECONDS=1800`.
-`PUBLIC_LOOKBACK_HOURS=48`.
+Доступны только публичные каналы, которые показывают посты в веб-версии. Частные приглашения, закрытые группы и защищённые публикации не поддерживаются. Telegram может ограничивать число запросов и менять HTML. Сканер учитывает HTTP 429 и приостанавливает обращение без обходных механизмов. Проверка раз в 30 минут не гарантирует получение каждого поста при высокой частоте публикаций. ИИ в этом режиме пока не подключён: работает фильтрация по тексту и профилю.
 
-`Start Command: python -m app.bot_runtime`.
-`Dockerfile` defaults to this command too. Only one service instance per bot token.
-Attach a Railway persistent volume on `/data` to the bot service. Without it all state will be lost on replacement.
+## Railway
 
-After deploy, open the bot and send `/start`. Set `BOT_OWNER_ID`, then add a public channel with `/addsource @channelname`. On `/publicstatus`, check that the first scan has completed, and verify end-to-end with a new public test post.
+`BOT_TOKEN` обязателен, `BOT_OWNER_ID` настраивается после `/start` (бот покажет ID); без него нельзя одобрять предложения или добавлять каналы. `SQLITE_PATH=/data/castings.db`, `PUBLIC_SCAN_INTERVAL_SECONDS=1800`. Один экземпляр. Подключить постоянный том к `/data`.
 
-To run unit tests: `python -m unittest discover -s tests -v`.
+Запуск: `python -m app.bot_runtime`. Тесты: `python -m unittest discover -s tests -v`.
 
-The legacy Telethon implementation is still in repository files but **not used** by this entrypoint.
+Новая ветка в PR должна пройти тестирование и подтверждение реального сбора до выпуска.
