@@ -269,7 +269,7 @@ class Database:
     def should_scan_public(self,chat_id,interval):
         import time
         row=self.connection.execute("SELECT next_scan FROM public_state WHERE chat_id=?",(chat_id,)).fetchone()
-        return bool(row and row[0]<=int(time()))
+        return bool(row and row[0]<=int(time.time()))
 
     def update_public_status(self,chat_id,error=None,retry_after=1200):
         with self.connection:
