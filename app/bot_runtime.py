@@ -11,6 +11,7 @@ from app.config import Profile
 from app.matcher import match_post
 from app.casting_quality import actionable
 from app.public_channels import normalize_channel, monitor_public
+from app.authorized_reader import run_authorized_reader
 from app.locale_ru import suggestion_status, readable_time, source_error
 
 log = logging.getLogger("casting.bot")
@@ -521,9 +522,25 @@ async def run():
         await asyncio.to_thread(api.call,"deleteWebhook",drop_pending_updates=False)
         await asyncio.to_thread(api.call,"getMe")
         log.info("Bot API started: no user session used")
-        public_task=asyncio.create_task(monitor_public(
-            db,receiver,interval_seconds=int(os.getenv("PUBLIC_SCAN_INTERVAL_SECONDS","1800")),
-            lookback_hours=int(os.getenv("PUBLIC_LOOKBACK_HOURS","48"))))
+        client_enabled=os.getenv("CLIENT_SCAN_ENABLED","false").casefold() in ("true","1","yes")
+        client_task=None
+        if client_enabled:
+            # This is an explicit opt-in. Never infer account access from BOT_TOKEN.
+            api_id=os.getenv("TELEGRAM_API_ID","").strip()
+            api_hash=os.getenv("TELEGRAM_API_HASH","").strip()
+            session=os.getenv("TELEGRAM_SESSION","").strip()
+            if not (api_id.isdigit() and api_hash and session):
+                log.error("CLIENT_SCAN_ENABLED=true but authorized client settings are missing")
+            else:
+                client_task=asyncio.create_task(run_authorized_reader(
+                    db,receiver,api_id=int(api_id),api_hash=api_hash,session=session,
+                    interval=int(os.getenv("CLIENT_SCAN_INTERVAL_SECONDS","1800")),
+                    lookback_hours=int(os.getenv("PUBLIC_LOOKBACK_HOURS","48"))))
+        public_task=None
+        if not client_enabled:
+            public_task=asyncio.create_task(monitor_public(
+                db,receiver,interval_seconds=int(os.getenv("PUBLIC_SCAN_INTERVAL_SECONDS","1800")),
+                lookback_hours=int(os.getenv("PUBLIC_LOOKBACK_HOURS","48"))))
         while True:
             try:
                 updates=await asyncio.to_thread(api.get_updates,db.cursor()+1)
@@ -548,9 +565,12 @@ async def run():
                 log.exception("Polling loop failure")
                 await asyncio.sleep(10)
     finally:
-        if "public_task" in locals():
-            public_task.cancel()
-            await asyncio.gather(public_task,return_exceptions=True)
+        tasks=[task for task in (locals().get("public_task"),
+                                  locals().get("client_task")) if task is not None]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks,return_exceptions=True)
         db.close()
 
 def main():
