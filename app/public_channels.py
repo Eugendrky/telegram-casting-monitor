@@ -64,7 +64,17 @@ def parse_preview(markup: str, username: str) -> list[PublicPost]:
     result: dict[int, PublicPost] = {}
     matches = soup.select(".tgme_widget_message[data-post]")
     if not matches:
-        raise PreviewError("Нет доступных публикаций в публичном веб-предпросмотре")
+        extra=soup.select_one(".tgme_page_extra")
+        label=extra.get_text(" ",strip=True).lower() if extra else ""
+        if "members" in label or "участник" in label:
+            raise PreviewError(
+                "Это может быть Telegram-группа: сообщения недоступны в "
+                "публичном веб-просмотре. Одной ссылки недостаточно для доступа"
+            )
+        raise PreviewError(
+            "Нет сообщений в публичном веб-просмотре. "
+            "Источник может быть группой или ограниченным каналом"
+        )
     for item in matches:
         ref = item.get("data-post") or ""
         name, sep, number = ref.partition("/")
