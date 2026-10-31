@@ -123,7 +123,7 @@ def fetch_preview(username: str, timeout: int = 15) -> list[PublicPost]:
         if exc.code == 429:
             delay = exc.headers.get("Retry-After", "") if exc.headers else ""
             raise PreviewRateLimited(int(delay) if delay.isdigit() else 3600) from exc
-        raise PreviewError(f"Telegram preview HTTP {exc.code}") from exc
+        raise PreviewError(f"Публичная страница Telegram вернула код {exc.code}") from exc
     except (OSError, UnicodeError) as exc:
         raise PreviewError(f"Сбой подключения: {type(exc).__name__}") from exc
 
@@ -142,7 +142,7 @@ async def monitor_public(db, receiver, *, interval_seconds: int = 1200,
             try:
                 posts = await asyncio.to_thread(fetch, username)
             except PreviewRateLimited as exc:
-                db.update_public_status(chat_id, error="rate_limited",
+                db.update_public_status(chat_id, error="Telegram временно ограничил запросы",
                                         retry_after=exc.retry_after)
                 LOG.warning("Public preview rate-limited for %s. Pausing reads.", username)
                 # Stop processing other sources for this cycle too.
@@ -153,7 +153,7 @@ async def monitor_public(db, receiver, *, interval_seconds: int = 1200,
                 LOG.warning("Public preview unavailable for %s: %s",username,exc)
                 continue
             except Exception:
-                db.update_public_status(chat_id,error="Unexpected fetch error",
+                db.update_public_status(chat_id,error="Не удалось получить страницу",
                                         retry_after=3600)
                 LOG.exception("Unexpected public preview failure for %s", username)
                 continue

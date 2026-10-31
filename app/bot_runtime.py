@@ -10,6 +10,7 @@ from app.bot_http import BotAPI, TelegramError
 from app.config import Profile
 from app.matcher import match_post
 from app.public_channels import normalize_channel, monitor_public
+from app.locale_ru import suggestion_status, readable_time, source_error
 
 log = logging.getLogger("casting.bot")
 HELP = (
@@ -25,8 +26,10 @@ HELP = (
     "/castings — мои последние находки\n"
     "/pause и /resume — уведомления\n"
     "/status — состояние\n/suggest — предложить канал\n\n"
-    "Для администратора: /addsource @channel и /publicstatus"
+    "Предложить новый канал можно через /suggest."
 )
+ADMIN_HELP = ("\n\nДля администратора: /admin, /addsource "
+              "(со ссылкой на канал), /publicstatus.")
 
 def link_for(chat: dict, message_id: int) -> str | None:
     username = chat.get("username")
@@ -104,12 +107,12 @@ class Receiver:
                 continue
             status="✅" if enabled else "⏳"
             following="🔔" if self.db.following(user_id,chat_id) else "🔕"
-            lines.append(f"{status} {following} {title}\nID: {chat_id}")
+            lines.append(f"{status} {following} {title}\nКод источника: {chat_id}")
         if not lines:
-            return "Источников пока нет. Администратор может добавить /addsource @channel"
+            return "Источников пока нет. Администратор может добавить публичный канал командой /addsource."
         return ("Источники:\n"+ "\n".join(lines[:35])+
-                "\n\n/follow ID и /unfollow ID — подписка на конкретный источник"+
-                ("\n/enable ID и /disable ID — разрешения администратора" if user_id==self.owner_id else ""))
+                "\n\nДля подписки: /follow с кодом источника. Для отключения: /unfollow с кодом источника."+
+                ("\nДля управления: /enable или /disable с кодом источника." if user_id==self.owner_id else ""))
 
     def handle_private(self, message: dict):
         user_id=message.get("from",{}).get("id")
@@ -152,23 +155,27 @@ class Receiver:
             except ValueError as exc:
                 self.api.send(user_id,str(exc))
                 return
-            self.api.send(user_id,f"✅ Добавлен публичный канал @{channel}. ID: {channel_id}. Проверю доступность при ближайшем цикле.")
+            self.api.send(user_id,f"✅ Добавлен публичный канал @{channel}. Код источника: {channel_id}. Проверю доступность при ближайшей проверке.")
         elif cmd=="/publicstatus":
             if user_id != self.owner_id:
                 return
             rows=self.db.public_status()
             lines=[
-                f"{x[0]} | пост №{x[1]} | на странице {x[6]}, новых {x[7]}, совпадений {x[8]}\n"
-                f"Проверен: {x[4] or 'ещё нет'} | успешно: {x[5] or 'ещё нет'}\n"
-                f"Ошибка: {x[2] or 'нет'}"
+                f"{x[0]} | последний пост №{x[1]} | на странице: {x[6]}, новых: {x[7]}, подошло: {x[8]}\n"
+                f"Проверка: {readable_time(x[4])} | успешная: {readable_time(x[5])}\n"
+                f"Ошибка: {source_error(x[2])}"
                 for x in rows
             ]
             self.api.send(user_id,"\n\n".join(lines)[:3800] or "Публичных каналов пока нет.")
         elif cmd=="/start":
             self.db.register(user_id)
-            self.api.send(user_id,HELP + f"\n\nВаш Telegram ID: {user_id}" +
-                          ("\nУкажите BOT_OWNER_ID в Railway, чтобы управлять источниками." if self.owner_id <= 0 else ""),reply_markup=menu())
-        elif cmd=="/help": self.api.send(user_id,HELP)
+            intro = HELP
+            if user_id == self.owner_id and self.owner_id > 0:
+                intro += ADMIN_HELP
+            elif self.owner_id <= 0:
+                intro += f"\n\nВаш идентификатор в Telegram: {user_id}. Укажите его в настройке BOT_OWNER_ID."
+            self.api.send(user_id,intro,reply_markup=menu())
+        elif cmd=="/help": self.api.send(user_id,HELP + (ADMIN_HELP if user_id==self.owner_id and self.owner_id>0 else ""),reply_markup=menu())
         elif cmd=="/suggest":
             if arg: self.submit_suggestion(user_id,arg)
             else:
@@ -219,15 +226,15 @@ class Receiver:
         elif cmd in ("/follow","/unfollow","/enable","/disable"):
             try: chat_id=int(arg)
             except ValueError:
-                self.api.send(user_id,"Укажите числовой ID из /sources.");return
+                self.api.send(user_id,"Укажите числовой код источника из /sources.");return
             if cmd in ("/enable","/disable"):
                 if user_id!=self.owner_id:
                     self.api.send(user_id,"Доступно только администратору.");return
                 ok=self.db.enable_source(chat_id,cmd=="/enable")
-                self.api.send(user_id,"Источник обновлён." if ok else "Источник недоступен. Добавьте бота в чат.")
+                self.api.send(user_id,"Источник обновлён." if ok else "Источник недоступен. Проверьте его наличие в каталоге.")
             else:
                 if not self.db.source(chat_id) or not self.db.source(chat_id)[4]:
-                    self.api.send(user_id,"Нет такого доступного источника.");return
+                    self.api.send(user_id,"Источник с таким кодом не найден.");return
                 self.db.register(user_id)
                 self.db.follow(user_id,chat_id,cmd=="/follow")
                 self.api.send(user_id,"Подписка изменена.")
@@ -260,7 +267,7 @@ class Receiver:
                 except TelegramError as exc:
                     log.warning("Suggestion notification: API %s",exc.code)
         else:
-            self.api.send(user_id,"Этот канал уже рассматривался. Статус: "+status)
+            self.api.send(user_id,"Этот канал уже рассматривался. Статус: "+suggestion_status(status))
 
     def handle_callback(self, event: dict):
         user_id=(event.get("from") or {}).get("id")
@@ -294,7 +301,7 @@ class Receiver:
             self.api.send(user_id,"✅ Пол: "+GENDER_LABELS[gender]+"\n"+
                           profile_text(self.db.profile(user_id)),reply_markup=profile_menu())
         elif data=="menu:home":
-            self.api.send(user_id,HELP,reply_markup=menu())
+            self.api.send(user_id,HELP + (ADMIN_HELP if user_id==self.owner_id and self.owner_id>0 else ""),reply_markup=menu())
         elif data=="menu:profile":
             self.db.register(user_id)
             self.api.send(user_id,profile_text(self.db.profile(user_id)))
@@ -343,7 +350,7 @@ class Receiver:
                 self.api.send(user_id,"Предложение уже обработано.")
                 return
             author,username,status,chat_id=result
-            self.api.send(user_id,"@{}: {}".format(username,status))
+            self.api.send(user_id,"Канал @{}: {}".format(username,suggestion_status(status)))
             try:
                 self.api.send(author,"Канал @{}: {}".format(username,
                     "добавлен в каталог" if status=="approved" else "отклонён"))
@@ -360,7 +367,7 @@ class Receiver:
         if joined and self.owner_id > 0:
             try:
                 self.api.send(self.owner_id,f"Новый источник: {chat.get('title')}\n"
-                              f"ID: {chat['id']}\nЧтобы разрешить обработку: /enable {chat['id']}")
+                              f"Код источника: {chat['id']}\nЧтобы разрешить обработку: /enable {chat['id']}")
             except TelegramError as exc:
                 log.warning("Owner notification failed: %s",exc.code)
 
