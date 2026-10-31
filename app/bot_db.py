@@ -6,6 +6,7 @@ import time
 import threading
 from functools import wraps
 from pathlib import Path
+from app.post_identity import fingerprint
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS subscribers (
@@ -116,6 +117,16 @@ class Database:
             "last_matched":"INTEGER NOT NULL DEFAULT 0",
         })
         self._migrate("deliveries", {"next_retry":"INTEGER NOT NULL DEFAULT 0"})
+        self._migrate("castings", {"fingerprint":"TEXT"})
+        existing=self.connection.execute(
+            "SELECT chat_id,message_id,body FROM castings WHERE fingerprint IS NULL"
+        ).fetchall()
+        if existing:
+            with self.connection:
+                self.connection.executemany(
+                    "UPDATE castings SET fingerprint=? WHERE chat_id=? AND message_id=?",
+                    [(fingerprint(body),chat_id,message_id) for chat_id,message_id,body in existing]
+                )
 
     def _migrate(self, table: str, fields: dict):
         existing={row[1] for row in self.connection.execute(f"PRAGMA table_info({table})")}
@@ -445,12 +456,36 @@ class Database:
         with self.connection:
             self.connection.execute(
                 """INSERT OR IGNORE INTO castings
-                   (chat_id,message_id,title,body,url,posted_at) VALUES (?,?,?,?,?,?)""",
-                (chat_id,message_id,title,body[:8000],url,posted_at)
+                   (chat_id,message_id,title,body,url,posted_at,fingerprint)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (chat_id,message_id,title,body[:8000],url,posted_at,fingerprint(body[:8000]))
             )
 
     def queue(self, user_id: int, chat_id: int, message_id: int):
+        """Ignore exact-text reposts already queued or sent to the same subscriber.
+
+        Different original source references remain in the archive. Reposting
+        identical text is only suppressed within a bounded 14-day window.
+        """
         with self.connection:
+            row=self.connection.execute(
+                "SELECT fingerprint FROM castings WHERE chat_id=? AND message_id=?",
+                (chat_id,message_id)
+            ).fetchone()
+            if not row:
+                return
+            cutoff=int(time.time())-14*86400
+            duplicate=self.connection.execute(
+                """SELECT 1 FROM deliveries d JOIN castings c
+                   ON c.chat_id=d.chat_id AND c.message_id=d.message_id
+                   WHERE d.user_id=? AND c.fingerprint=?
+                     AND d.status IN ('pending','sent')
+                     AND COALESCE(c.posted_at,
+                          CAST(strftime('%s',c.created_at) AS INTEGER))>=?
+                   LIMIT 1""",(user_id,row[0],cutoff)
+            ).fetchone()
+            if duplicate:
+                return
             self.connection.execute(
                 """INSERT OR IGNORE INTO deliveries(user_id,chat_id,message_id)
                    VALUES(?,?,?)""",(user_id,chat_id,message_id)
