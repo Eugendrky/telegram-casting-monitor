@@ -195,7 +195,10 @@ class Receiver:
                     feedback.get("relevant",0),feedback.get("irrelevant",0)) +
                 "\nДоставлено: {} | ждут: {} | ошибок: {}".format(
                     deliveries.get("sent",0),deliveries.get("pending",0),deliveries.get("failed",0)),
-                reply_markup={"inline_keyboard":[[{"text":"📥 Предложения","callback_data":"admin:queue:0"}]]})
+                reply_markup={"inline_keyboard":[
+                    [{"text":"📥 Предложения","callback_data":"admin:queue:0"}],
+                    [{"text":"📡 Состояние источников","callback_data":"admin:sources"}]
+                ]})
         elif cmd=="/profile":
             self.db.register(user_id)
             self.api.send(user_id,profile_text(self.db.profile(user_id)),reply_markup=profile_menu())
@@ -342,6 +345,23 @@ class Receiver:
             self.api.send(user_id,"\n\n".join(
                 "🎬 {}\n{}\n{}".format(title,body[:180],url or "") for title,body,url in rows)[:3700]
                 if rows else "Подходящих кастингов пока нет.")
+        elif data=="admin:sources":
+            if user_id != self.owner_id:
+                return
+            rows=self.db.public_status()
+            if not rows:
+                self.api.send(user_id,"Источники пока не добавлены.")
+            else:
+                self.api.send(user_id,
+                    "📡 Проверка источников. Ошибок: {} из {}.\n\n".format(
+                        sum(bool(x[2]) for x in rows),len(rows))+
+                    "\n\n".join(
+                        "{}: {}\nПроверка: {}".format(
+                            x[0],source_error(x[2]) if x[2] else "Страница доступна",
+                            readable_time(x[4])
+                        ) for x in rows
+                    )[:3500]
+                )
         elif data.startswith("admin:queue:"):
             if user_id!=self.owner_id:return
             try: page=max(0,min(int(data.split(":")[2]),100))
