@@ -243,7 +243,7 @@ def match_post(text: str, profile: Profile) -> MatchResult:
     # match gender, age and height within one role. Never combine attributes
     # from two incompatible roles to create a false match.
     role_body = body
-    segments = [part.strip() for part in re.split(r"[\\n;]+", body) if part.strip()]
+    segments = [part.strip() for part in re.split(r"[\n;]+", body) if part.strip()]
     role_segments = [
         part for part in segments
         if (_contains_any(part, FEMALE_HINTS) or _contains_any(part, MALE_HINTS))
