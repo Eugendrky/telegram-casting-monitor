@@ -12,12 +12,21 @@ from app.matcher import match_post
 from app.public_channels import normalize_channel, monitor_public
 
 log = logging.getLogger("casting.bot")
-HELP = ("🎬 Поиск кастингов\n\nДобавьте меня в группу или канал с правом читать новые "
-        "публикации. Администратор разрешит источник, и я буду присылать подходящие "
-        "кастинги.\n\n/profile — мой профиль\n/city Москва — город\n"
-        "/gender male|female|any — пол\n/age 25 — возраст\n/height 170 — рост\n"
-        "/sources — источники и подписки\n/castings — мои последние находки\n"
-        "/pause и /resume — уведомления\n/status — состояние")
+HELP = (
+    "🎬 Поиск кастингов из публичных Telegram-каналов\n\n"
+    "Я самостоятельно проверяю выбранные публичные каналы, "
+    "отбираю объявления по вашему профилю и присылаю подходящие.\n\n"
+    "/profile — мой профиль\n"
+    "/city Москва — город\n"
+    "/gender male|female|any — пол\n"
+    "/age 25 — возраст\n"
+    "/height 170 — рост\n"
+    "/sources — выбранные каналы и подписки\n"
+    "/castings — мои последние находки\n"
+    "/pause и /resume — уведомления\n"
+    "/status — состояние\n\n"
+    "Для администратора: /addsource @channel и /publicstatus"
+)
 
 def link_for(chat: dict, message_id: int) -> str | None:
     username = chat.get("username")
