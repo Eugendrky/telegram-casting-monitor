@@ -55,6 +55,24 @@ class Store:
                 chat_id INTEGER PRIMARY KEY, last_message_id INTEGER NOT NULL DEFAULT 0
             )"""
         )
+        custom_columns = {row[1] for row in self._conn.execute("PRAGMA table_info(custom_sources)")}
+        for column, kind in (("peer_id", "INTEGER"), ("access_hash", "INTEGER"), ("peer_kind", "TEXT")):
+            if column not in custom_columns:
+                self._conn.execute(f"ALTER TABLE custom_sources ADD COLUMN {column} {kind}")
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS castings (
+                chat_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                source_title TEXT NOT NULL,
+                text TEXT NOT NULL,
+                message_link TEXT NOT NULL,
+                score INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                delivered INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(chat_id, message_id)
+            )
+        """)
         self._conn.commit()
 
     def is_seen(self, chat_id: int, message_id: int) -> bool:
@@ -75,10 +93,7 @@ class Store:
         self._conn.commit()
 
     def source_mode(self) -> str:
-        row = self._conn.execute(
-            "SELECT value FROM preferences WHERE name = 'source_mode'"
-        ).fetchone()
-        return "selected"  # Legacy all/configured modes are intentionally retired
+        return "selected"
 
     def set_source_mode(self, mode: str) -> None:
         if mode != "selected":
@@ -163,6 +178,59 @@ class Store:
 
     def custom_sources(self) -> list[tuple[str, str | None, int | None]]:
         return list(self._conn.execute("SELECT username, title, chat_id FROM custom_sources"))
+
+    def monitored_sources(self) -> list[dict]:
+        sources = [{
+            "kind": "selected", "chat_id": row[0], "title": row[1],
+            "peer_id": row[2], "access_hash": row[3],
+            "peer_kind": row[4], "username": row[5],
+        } for row in self.selected_sources()]
+        sources += [{
+            "kind": "custom", "chat_id": row[2], "title": row[1] or row[0],
+            "peer_id": row[3], "access_hash": row[4],
+            "peer_kind": row[5], "username": row[0],
+        } for row in self._conn.execute(
+            "SELECT username, title, chat_id, peer_id, access_hash, peer_kind FROM custom_sources ORDER BY username"
+        )]
+        return sources
+
+    def update_custom_peer(self, username: str, *, chat_id: int, title: str,
+                           peer_id: int, access_hash: int | None, peer_kind: str) -> None:
+        self._conn.execute(
+            """UPDATE custom_sources
+               SET chat_id=?, title=?, peer_id=?, access_hash=?, peer_kind=?
+               WHERE username=?""",
+            (chat_id, title, peer_id, access_hash, peer_kind, username),
+        )
+        self._conn.commit()
+
+    def remove_selected_source(self, chat_id: int) -> None:
+        self._conn.execute("DELETE FROM selected_sources WHERE chat_id=?", (chat_id,))
+        self._conn.commit()
+
+    def record_casting(self, chat_id: int, message_id: int, title: str,
+                       text: str, link: str, score: int, reason: str) -> None:
+        self._conn.execute(
+            """INSERT OR IGNORE INTO castings
+               (chat_id, message_id, source_title, text, message_link, score, reason)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (chat_id, message_id, title, text[:4500], link, score, reason[:500]),
+        )
+        self._conn.commit()
+
+    def mark_delivered(self, chat_id: int, message_id: int) -> None:
+        self._conn.execute(
+            "UPDATE castings SET delivered=1 WHERE chat_id=? AND message_id=?",
+            (chat_id, message_id),
+        )
+        self._conn.commit()
+
+    def latest_castings(self, limit: int = 10) -> list[tuple]:
+        return list(self._conn.execute(
+            """SELECT source_title, text, message_link, score, reason, delivered
+               FROM castings ORDER BY created_at DESC, rowid DESC LIMIT ?""",
+            (max(1, min(limit, 30)),),
+        ))
 
     def close(self) -> None:
         self._conn.close()
