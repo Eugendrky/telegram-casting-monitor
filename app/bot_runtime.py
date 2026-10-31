@@ -13,6 +13,7 @@ from app.casting_quality import actionable
 from app.public_channels import normalize_channel, monitor_public
 from app.authorized_reader import run_authorized_reader
 from app.locale_ru import suggestion_status, readable_time, source_error
+from app.connection_preferences import ConnectionPreferences
 
 log = logging.getLogger("casting.bot")
 HELP = (
@@ -102,6 +103,7 @@ def menu():
 class Receiver:
     def __init__(self, api: BotAPI, db: Database, owner_id: int):
         self.api,self.db,self.owner_id=api,db,owner_id
+        self.connection_preferences=ConnectionPreferences(db)
 
     def source_list(self,user_id: int):
         lines=[]
@@ -144,7 +146,39 @@ class Receiver:
         cmd,*rest=text.split(maxsplit=1)
         cmd=cmd.split("@")[0].lower()
         arg=rest[0].strip() if rest else ""
-        if cmd=="/cancel":
+        if cmd=="/connect":
+            self.api.send(user_id,
+                "Подключение Telegram-аккаунтов ещё не реализовано. "
+                "Здесь можно только выбрать источники для будущего испытания. "
+                "QR-код и пароль не требуются. "
+                "Для подтверждения выбора источников: /sources_prepare")
+        elif cmd=="/sources_prepare":
+            self.connection_preferences.grant(user_id)
+            self.api.send(user_id,"Режим выбора источников включён. "
+                "Добавьте источник: /mysource @username. "
+                "Список: /mysources. Отключить и удалить: /disconnect.")
+        elif cmd=="/mysource":
+            try:
+                name=self.connection_preferences.select_source(user_id,arg)
+                self.api.send(user_id,"Источник @"+name+" сохранён. "
+                    "Это не означает, что сообщения из него доступны.")
+            except ValueError as exc:
+                self.api.send(user_id,str(exc))
+        elif cmd=="/removesource":
+            try:
+                removed=self.connection_preferences.remove_source(user_id,arg)
+                self.api.send(user_id,"Источник удалён." if removed else "Источник не выбран.")
+            except ValueError as exc:
+                self.api.send(user_id,str(exc))
+        elif cmd=="/mysources":
+            sources=self.connection_preferences.sources(user_id)
+            self.api.send(user_id,"Выбранные источники:\\n"+ "\\n".join("@"+n for n in sources)
+                if sources else "Выбранных источников нет. /sources_prepare")
+        elif cmd=="/disconnect":
+            self.connection_preferences.clear(user_id)
+            self.api.send(user_id,"Настройки экспериментального подключения удалены. "
+                "Telegram-сессия не создавалась.")
+        elif cmd=="/cancel":
             self.db.set_profile_prompt(user_id,None)
             self.db.set_waiting_for_suggestion(user_id,False)
             self.api.send(user_id,"Действие отменено.",reply_markup=menu())
