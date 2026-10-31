@@ -45,6 +45,16 @@ class Store:
             )
             """
         )
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(selected_sources)")}
+        for column, kind in (("peer_id", "INTEGER"), ("access_hash", "INTEGER"),
+                             ("peer_kind", "TEXT"), ("username", "TEXT")):
+            if column not in columns:
+                self._conn.execute(f"ALTER TABLE selected_sources ADD COLUMN {column} {kind}")
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS source_cursors (
+                chat_id INTEGER PRIMARY KEY, last_message_id INTEGER NOT NULL DEFAULT 0
+            )"""
+        )
         self._conn.commit()
 
     def is_seen(self, chat_id: int, message_id: int) -> bool:
@@ -68,10 +78,10 @@ class Store:
         row = self._conn.execute(
             "SELECT value FROM preferences WHERE name = 'source_mode'"
         ).fetchone()
-        return row[0] if row is not None else "configured"
+        return "selected"  # Legacy all/configured modes are intentionally retired
 
     def set_source_mode(self, mode: str) -> None:
-        if mode not in {"all", "selected", "configured"}:
+        if mode != "selected":
             raise ValueError("invalid source mode")
         self._conn.execute(
             "INSERT INTO preferences(name, value) VALUES ('source_mode', ?) "
@@ -83,14 +93,48 @@ class Store:
     def selected_source_ids(self) -> set[int]:
         return {row[0] for row in self._conn.execute("SELECT chat_id FROM selected_sources")}
 
-    def toggle_source(self, chat_id: int, title: str) -> bool:
+    def selected_sources(self) -> list[tuple[int, str, int | None, int | None, str | None, str | None]]:
+        return list(self._conn.execute(
+            "SELECT chat_id, title, peer_id, access_hash, peer_kind, username FROM selected_sources"
+            " ORDER BY title"
+        ))
+
+    def cursor(self, chat_id: int) -> int:
+        row = self._conn.execute(
+            "SELECT last_message_id FROM source_cursors WHERE chat_id = ?", (chat_id,)
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def advance_cursor(self, chat_id: int, message_id: int) -> None:
+        self._conn.execute(
+            """INSERT INTO source_cursors(chat_id, last_message_id) VALUES (?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET last_message_id =
+            MAX(source_cursors.last_message_id, excluded.last_message_id)""",
+            (chat_id, message_id),
+        )
+        self._conn.commit()
+
+    def update_source_peer(self, chat_id: int, peer_id: int, access_hash: int | None,
+                           peer_kind: str, username: str | None) -> None:
+        self._conn.execute(
+            """UPDATE selected_sources SET peer_id=?, access_hash=?, peer_kind=?, username=?
+               WHERE chat_id=?""",
+            (peer_id, access_hash, peer_kind, username, chat_id),
+        )
+        self._conn.commit()
+
+    def toggle_source(self, chat_id: int, title: str, *, peer_id: int | None = None,
+                      access_hash: int | None = None, peer_kind: str | None = None,
+                      username: str | None = None) -> bool:
         if self._conn.execute("SELECT 1 FROM selected_sources WHERE chat_id = ?", (chat_id,)).fetchone():
             self._conn.execute("DELETE FROM selected_sources WHERE chat_id = ?", (chat_id,))
             selected = False
         else:
             self._conn.execute(
-                "INSERT INTO selected_sources(chat_id, title) VALUES (?, ?)",
-                (chat_id, title),
+                """INSERT INTO selected_sources
+                   (chat_id, title, peer_id, access_hash, peer_kind, username)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (chat_id, title, peer_id, access_hash, peer_kind, username),
             )
             selected = True
         self._conn.execute(

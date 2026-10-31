@@ -12,13 +12,4 @@ def user_client(settings: Settings) -> TelegramClient:
     else:
         settings.session_path.parent.mkdir(parents=True, exist_ok=True)
         session = str(settings.session_path)
-    return TelegramClient(
-        session,
-        settings.api_id,
-        settings.api_hash,
-        device_model="Desktop",
-        system_version="Windows 10",
-        app_version="4.16.8 x64",
-        lang_code="en",
-        system_lang_code="en-US",
-    )
+    return TelegramClient(session, settings.api_id, settings.api_hash, flood_sleep_threshold=0)

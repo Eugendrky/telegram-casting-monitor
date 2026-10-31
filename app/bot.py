@@ -54,7 +54,7 @@ class BotController:
         if action in {"start", "help"}:
             return (
                 "🎬 Мой помощник по кастингам\n\n"
-                "Собираю подходящие объявления из Telegram-групп и каналов.\n\n"
+                "Проверяю только выбранные группы и каналы.\n\n"
                 "Команды:\n"
                 "/sources — выбрать из уже подписанных\n"
                 "/addsource @username или ссылка — добавить группу вручную\n"
@@ -96,12 +96,7 @@ class BotController:
         mode = self.store.source_mode()
         page_count = max(1, (len(sources) + PAGE_SIZE - 1) // PAGE_SIZE)
         page = max(0, min(page, page_count - 1))
-        if mode == "selected":
-            state = f"только выбранные ({len(selected)} + {len(custom)} вручных)"
-        elif mode == "all":
-            state = "все группы и каналы"
-        else:
-            state = f"по настройке SCAN_MODE ({self.settings.scan_mode})"
+        state = f"только выбранные ({len(selected)} + {len(custom)} вручных)"
         text = (
             f"📚 Источники кастингов\n\nРежим: {state}\n"
             f"Доступно групп и каналов: {len(sources)}\n"
@@ -123,8 +118,7 @@ class BotController:
             navigation.append(Button.inline("Далее ➡️", f"src:page:{page + 1}".encode()))
         if navigation:
             buttons.append(navigation)
-        buttons.append([Button.inline("🌍 Все источники", b"src:mode:all"),
-                        Button.inline("☑️ Только выбранные", b"src:mode:selected")])
+        buttons.append([Button.inline("☑️ Проверяются только выбранные", b"src:mode:selected")])
         buttons.append([Button.inline("🔄 Обновить", f"src:refresh:{page}".encode()),
                         Button.inline("🏠 Меню", b"start")])
         return text, buttons
@@ -145,7 +139,7 @@ class BotController:
                 chat_id, page = int(parts[2]), int(parts[3])
                 if page < 0:
                     raise ValueError("negative page")
-            elif kind == "mode" and len(parts) == 3 and parts[2] in {"all", "selected"}:
+            elif kind == "mode" and len(parts) == 3 and parts[2] == "selected":
                 pass
             else:
                 raise ValueError("invalid callback")
@@ -160,7 +154,18 @@ class BotController:
                 if candidate is None:
                     await event.answer("Источник недоступен. Обнови список.", alert=True)
                     return
-                self.store.toggle_source(candidate[0], candidate[1])
+                # Save the peer from the explicit source-list action for future direct reads.
+                entity = next((d.entity async for d in self.user_client.iter_dialogs()
+                               if d.id == candidate[0]), None)
+                if entity is None:
+                    await event.answer("Обнови список источников", alert=True)
+                    return
+                kind = "channel" if getattr(entity, "access_hash", None) is not None else "chat"
+                self.store.toggle_source(
+                    candidate[0], candidate[1], peer_id=entity.id,
+                    access_hash=getattr(entity, "access_hash", None),
+                    peer_kind=kind, username=getattr(entity, "username", None),
+                )
             elif kind == "mode":
                 self.store.set_source_mode(parts[2])
             text, buttons = await self._sources_screen(page, refresh=(kind == "refresh"))
