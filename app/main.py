@@ -58,7 +58,8 @@ async def _health_server(port: int) -> asyncio.AbstractServer:
 
 
 def _selected_peer(source):
-    chat_id, title, peer_id, access_hash, peer_kind, username = source
+    peer_id, access_hash = source["peer_id"], source["access_hash"]
+    peer_kind, username = source["peer_kind"], source["username"]
     if peer_kind == "channel" and peer_id and access_hash is not None:
         return InputPeerChannel(peer_id, access_hash)
     if peer_kind == "chat" and peer_id:
@@ -101,7 +102,10 @@ async def _scan_entity(client, entity, chat_id: int, name: str, settings: Settin
                 result.reasons.append("ИИ: " + review["reason"])
             notice = _format_notice(type("Source", (), {"name": name})(),
                                     message, result.reasons, result.score)
+            store.record_casting(chat_id, message.id, name, message.raw_text or "",
+                                 message_link(message), result.score, "; ".join(result.reasons))
             await notify(notice)
+            store.mark_delivered(chat_id, message.id)
             sent += 1
         store.mark(chat_id, message.id, result.matched)
         store.advance_cursor(chat_id, message.id)
@@ -116,14 +120,39 @@ async def scan_once(client: TelegramClient, settings: Settings, store: Store,
     if notify is None:
         async def notify(text: str) -> None:
             await client.send_message(settings.notify_peer, text, parse_mode=None, link_preview=False)
-    sources = store.selected_sources()
+    sources = store.monitored_sources()
     sent = 0
+    scanned_ids = set()
     for source in sources:
-        chat_id, name = source[:2]
         peer = _selected_peer(source)
         if peer is None:
-            log.warning("source %s has no cached peer; select it again via /sources", chat_id)
+            log.warning("source %s cannot be resolved without a username or cached peer", source["title"])
             continue
+        if source["chat_id"] is None and source["username"]:
+            # Resolve explicitly added public sources once and persist peer metadata.
+            try:
+                entity = await client.get_entity(source["username"])
+                peer_kind = "channel" if getattr(entity, "access_hash", None) is not None else "chat"
+                from telethon import utils as telegram_utils
+                chat_id = telegram_utils.get_peer_id(entity)
+                store.update_custom_peer(source["username"], chat_id=chat_id,
+                    title=getattr(entity, "title", None) or source["title"],
+                    peer_id=entity.id, access_hash=getattr(entity, "access_hash", None),
+                    peer_kind=peer_kind)
+                source["chat_id"] = chat_id
+                source["title"] = getattr(entity, "title", None) or source["title"]
+                peer = _selected_peer({**source, "peer_id": entity.id,
+                    "access_hash": getattr(entity, "access_hash", None),
+                    "peer_kind": peer_kind})
+            except (FloodWaitError, AuthKeyError, UnauthorizedError):
+                raise
+            except RPCError as exc:
+                log.warning("source resolution failed: %s", type(exc).__name__)
+                continue
+        chat_id, name = source["chat_id"], source["title"]
+        if chat_id is None or chat_id in scanned_ids:
+            continue
+        scanned_ids.add(chat_id)
         try:
             sent = await _scan_entity(client, peer, chat_id, name, settings, store, notify, sent)
         except (FloodWaitError, AuthKeyError, UnauthorizedError):
@@ -174,7 +203,7 @@ async def _scan_loop(client: TelegramClient, settings: Settings, store: Store,
 
 async def worker(settings: Settings) -> None:
     store = Store(settings.sqlite_path)
-    client = user_client(settings)
+    client: TelegramClient | None = user_client(settings) if settings.scan_enabled else None
     bot_client: TelegramClient | None = None
     health = await _health_server(settings.port) if settings.port > 0 else None
     state = ScanState()
@@ -193,10 +222,20 @@ async def worker(settings: Settings) -> None:
         return "🔎 Запускаю внеочередной поиск. Подходящие кастинги пришлю сюда."
 
     try:
-        async with client:
+        if not settings.bot_owner_id and not settings.scan_enabled:
+            raise RuntimeError("Set BOT_OWNER_ID to run the control bot without a user session")
+        if settings.scan_enabled and not store.monitored_sources():
+            raise RuntimeError("No selected sources. Keep SCAN_ENABLED=false until sources are selected.")
+        if client is not None:
+            await client.connect()
+            if not await client.is_user_authorized():
+                raise RuntimeError("Telegram user session not authorized; stop monitoring")
             me = await client.get_me()
-            log.info("вошли как %s", getattr(me, "username", None) or me.id)
-            owner_id = settings.bot_owner_id or me.id
+            log.info("authorized user session")
+        else:
+            me = None
+        owner_id = settings.bot_owner_id or me.id
+        try:
             if settings.bot_token:
                 bot_session = str(settings.sqlite_path.parent / "casting_bot")
                 bot_client = TelegramClient(bot_session, settings.api_id, settings.api_hash)
@@ -218,6 +257,9 @@ async def worker(settings: Settings) -> None:
                 log.warning("SCAN_ENABLED=false. Monitoring stopped by default.")
                 if bot_client is not None:
                     await bot_client.run_until_disconnected()
+        finally:
+            if client is not None:
+                await client.disconnect()
     finally:
         store.close()
         if bot_client is not None:

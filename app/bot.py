@@ -29,7 +29,7 @@ class BotController:
         settings: Settings,
         state: ScanState,
         request_scan: Callable[[], str],
-        user_client: TelegramClient,
+        user_client: TelegramClient | None,
         store: Store,
     ) -> None:
         self.client = client
@@ -57,6 +57,8 @@ class BotController:
                 "🎬 Мой помощник по кастингам\n\n"
                 "Проверяю только выбранные группы и каналы.\n\n"
                 "Команды:\n"
+                "/castings — последние сохранённые кастинги\n"
+                "/removesource @username — удалить источник\n"
                 "/sources — выбрать из уже подписанных\n"
                 "/addsource @username или ссылка — добавить группу вручную\n"
                 "/listsources — показать вручно добавленные\n"
@@ -78,6 +80,8 @@ class BotController:
         if (not refresh and self._sources_cache is not None
                 and time.monotonic() - self._sources_loaded_at < CACHE_SECONDS):
             return self._sources_cache
+        if self.user_client is None:
+            return []
         sources = []
         self._source_entities = {}
         async for dialog in self.user_client.iter_dialogs():
@@ -107,6 +111,8 @@ class BotController:
             "Нажми на название, чтобы включить/исключить.\n"
             "Или используй /addsource @username"
         )
+        if self.user_client is None:
+            text += "\n\nСписок ваших подписок доступен только при разрешённом подключении аккаунта. Добавляйте публичные источники через /addsource."
         if mode == "selected" and not selected and not custom:
             text += "\n\n⚠️ Не выбрано ни одного источника."
 
@@ -209,6 +215,27 @@ class BotController:
                     return
                 self.store.add_custom_source(username)
                 await event.respond(f"✅ Добавил @{username} в список источников.", parse_mode=None)
+                return
+
+            if command == "/removesource":
+                match = USERNAME_RE.search(args)
+                if not match:
+                    await event.respond("Напиши: /removesource @username", parse_mode=None)
+                    return
+                username = (match.group(1) or match.group(2) or "").lower()
+                self.store.remove_custom_source(username)
+                await event.respond(f"Источник @{username} удалён.", parse_mode=None)
+                return
+
+            if command == "/castings":
+                records = self.store.latest_castings(8)
+                if not records:
+                    await event.respond("Сохранённых кастингов пока нет.", parse_mode=None)
+                    return
+                lines = [f"{i}. {row[0]} · оценка {row[3]}\n{row[1][:150]}\n{row[2]}"
+                         for i, row in enumerate(records, 1)]
+                await event.respond("🎬 Последние кастинги\n\n" + "\n\n".join(lines),
+                                    parse_mode=None, link_preview=False)
                 return
 
             if command == "/listsources":
