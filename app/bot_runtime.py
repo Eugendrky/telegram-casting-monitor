@@ -12,6 +12,8 @@ from app.matcher import match_post
 from app.casting_quality import actionable
 from app.public_channels import normalize_channel, monitor_public
 from app.authorized_reader import run_authorized_reader
+from app.junction_relay import normalized
+from app.public_channels import source_id
 from app.locale_ru import suggestion_status, readable_time, source_error
 
 log = logging.getLogger("casting.bot")
@@ -475,6 +477,43 @@ class Receiver:
             if result.matched:
                 self.db.queue(uid,chat_id,message_id)
 
+    def handle_junction_message(self, message: dict):
+        chat=message.get("chat") or {}
+        chat_id=chat.get("id")
+        if chat.get("type") not in ("group","supergroup") or not isinstance(chat_id,int):
+            return
+        sender=message.get("from") or {}
+        text=(message.get("text") or "").strip()
+        if text.startswith("/junction_bind"):
+            if sender.get("id")!=self.owner_id or self.owner_id<=0:
+                return
+            parts=text.split()
+            reply=message.get("reply_to_message") or {}
+            junction=reply.get("from") or {}
+            if len(parts)!=2 or not junction.get("is_bot") or not isinstance(junction.get("id"),int):
+                self.api.send(chat_id,"Ответьте командой /junction_bind @источник на сообщение Junction Bot в этой группе.")
+                return
+            try:
+                username=normalize_channel(parts[1])
+                self.db.junction_bind(chat_id,source_id(username),junction["id"])
+            except ValueError as exc:
+                self.api.send(chat_id,str(exc))
+                return
+            self.api.send(chat_id,"Источник @{} привязан. Отправитель проверен по Telegram ID. "
+                          "Объявления без проверяемой ссылки на оригинал игнорируются.".format(username))
+            return
+        if text=="/junction_unbind":
+            if sender.get("id")==self.owner_id:
+                self.api.send(chat_id,"Привязка отключена." if self.db.junction_unbind(chat_id)
+                              else "Эта группа не привязана.")
+            return
+        binding=self.db.junction_binding(chat_id)
+        if binding is None:
+            return
+        post=normalized(message,binding)
+        if post:
+            self.handle_post(post)
+
     def process(self, update: dict):
         if "callback_query" in update:
             self.handle_callback(update["callback_query"])
@@ -486,7 +525,11 @@ class Receiver:
             chat=message.get("chat") or {}
             if chat.get("type")=="private":
                 self.handle_private(message)
-            elif chat.get("type") in ("group","supergroup","channel"):
+            elif chat.get("type") in ("group","supergroup"):
+                self.handle_junction_message(message)
+                if not (message.get("from") or {}).get("is_bot"):
+                    self.handle_post(message)
+            elif chat.get("type")=="channel":
                 self.handle_post(message)
 
     def flush(self):
