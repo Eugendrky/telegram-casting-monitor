@@ -18,7 +18,7 @@ HELP = (
     "отбираю объявления по вашему профилю и присылаю подходящие.\n\n"
     "/profile — мой профиль\n"
     "/city Москва — город\n"
-    "/gender male|female|any — пол\n"
+    "/gender — пол (выбор кнопкой)\n"
     "/age 25 — возраст\n"
     "/height 170 — рост\n"
     "/sources — выбранные каналы и подписки\n"
@@ -37,17 +37,34 @@ def link_for(chat: dict, message_id: int) -> str | None:
         return f"https://t.me/c/{chat_id[4:]}/{message_id}"
     return None
 
+GENDER_LABELS = {"male": "Мужской", "female": "Женский", "any": "Любой"}
+GENDER_CHOICES = {
+    "male": "male", "мужской": "male", "мужчина": "male", "м": "male",
+    "female": "female", "женский": "female", "женщина": "female", "ж": "female",
+    "any": "any", "любой": "any", "любая": "any", "все": "any",
+    "без разницы": "any", "неважно": "any",
+}
+
+def gender_menu():
+    return {"inline_keyboard": [
+        [{"text": "👨 Мужской", "callback_data": "gender:set:male"},
+         {"text": "👩 Женский", "callback_data": "gender:set:female"}],
+        [{"text": "Любой", "callback_data": "gender:set:any"}],
+        [{"text": "↩️ Назад в профиль", "callback_data": "menu:profile"}],
+    ]}
+
 def profile_text(profile: dict):
     return (f"Город: {profile['city'] or 'любой'}\n"
-            f"Пол: {profile['gender']}\nВозраст: {profile['age'] or 'любой'}\n"
+            f"Пол: {GENDER_LABELS.get(profile['gender'], 'Любой')}\nВозраст: {profile['age'] or 'любой'}\n"
             f"Рост: {profile['height_cm'] or 'любой'}\n"
             f"Уведомления: {'включены' if profile['active'] else 'выключены'}")
 
 def parse_setting(command: str, value: str):
     if command == "/city":
         return "city", value.strip()[:90]
-    if command == "/gender" and value in ("male","female","any"):
-        return "gender",value
+    if command == "/gender":
+        selected = GENDER_CHOICES.get(value.strip().casefold())
+        return ("gender", selected) if selected is not None else None
     if command in ("/age","/height"):
         try:
             number=int(value)
@@ -103,7 +120,11 @@ class Receiver:
             if prompt:
                 parsed=parse_setting("/"+prompt,text)
                 if parsed is None:
-                    self.api.send(user_id,"Не удалось распознать значение. Для отмены отправьте /cancel.")
+                    if prompt == "gender":
+                        self.api.send(user_id,"Выберите пол кнопкой или напишите: мужской, женский, любой.",
+                                      reply_markup=gender_menu())
+                    else:
+                        self.api.send(user_id,"Не удалось распознать значение. Для отмены отправьте /cancel.")
                 else:
                     self.db.set_profile_prompt(user_id,None)
                     self.db.update_profile(user_id,*parsed)
@@ -174,13 +195,18 @@ class Receiver:
                 field=cmd[1:]
                 self.db.set_profile_prompt(user_id,field)
                 prompts={"city":"Напишите город, например Москва.",
-                         "gender":"Укажите male, female или any.",
+                         "gender":"Выберите пол: мужской, женский или любой.",
                          "age":"Сколько вам лет? Напишите число от 4 до 95.",
                          "height":"Укажите рост в сантиметрах, от 100 до 230."}
-                self.api.send(user_id,prompts[field]+" Для отмены /cancel")
+                self.api.send(user_id,prompts[field]+" Для отмены /cancel",
+                              reply_markup=gender_menu() if field=="gender" else None)
                 return
             parsed=parse_setting(cmd,arg)
-            if parsed is None: self.api.send(user_id,"Неверное значение. Используйте /help")
+            if parsed is None:
+                self.api.send(user_id,
+                    "Выберите мужской, женский или любой." if cmd=="/gender"
+                    else "Неверное значение. Используйте /help",
+                    reply_markup=gender_menu() if cmd=="/gender" else None)
             else:
                 self.db.update_profile(user_id,*parsed)
                 self.api.send(user_id,"Настройки сохранены.\n"+profile_text(self.db.profile(user_id)))
@@ -256,8 +282,17 @@ class Receiver:
                 self.db.set_profile_prompt(user_id,field)
                 prompts={"city":"Напишите ваш город.","age":"Сколько вам лет?",
                          "height":"Укажите рост в сантиметрах.",
-                         "gender":"Укажите male, female или any."}
-                self.api.send(user_id,prompts[field]+" Отмена: /cancel")
+                         "gender":"Выберите пол: мужской, женский или любой."}
+                self.api.send(user_id,prompts[field]+" Отмена: /cancel",
+                              reply_markup=gender_menu() if field=="gender" else None)
+        elif data.startswith("gender:set:"):
+            gender=data.partition("gender:set:")[2]
+            if gender not in GENDER_LABELS:
+                return
+            self.db.set_profile_prompt(user_id,None)
+            self.db.update_profile(user_id,"gender",gender)
+            self.api.send(user_id,"✅ Пол: "+GENDER_LABELS[gender]+"\n"+
+                          profile_text(self.db.profile(user_id)),reply_markup=profile_menu())
         elif data=="menu:home":
             self.api.send(user_id,HELP,reply_markup=menu())
         elif data=="menu:profile":
