@@ -150,9 +150,12 @@ class Receiver:
         elif cmd=="/admin":
             if user_id!=self.owner_id: return
             counts=self.db.admin_counts()
+            feedback=self.db.feedback_stats()
             self.api.send(user_id,
                 "🛡 Админка\nПользователей: {}\nИсточников: {}\nПубликаций: {}\nОшибок: {}\nПредложений: {}".format(
-                    counts["users"],counts["sources"],counts["posts"],counts["errors"],counts["pending"]),
+                    counts["users"],counts["sources"],counts["posts"],counts["errors"],counts["pending"]) +
+                "\n👍 Подходит: {}  👎 Не подходит: {}".format(
+                    feedback.get("relevant",0),feedback.get("irrelevant",0)),
                 reply_markup={"inline_keyboard":[[{"text":"📥 Предложения","callback_data":"admin:queue:0"}]]})
         elif cmd=="/profile":
             self.db.register(user_id)
@@ -272,6 +275,19 @@ class Receiver:
                 self.api.send(user_id,"Следующая страница",
                     reply_markup={"inline_keyboard":[[{"text":"Далее ➡️",
                       "callback_data":"admin:queue:{}".format(page+1)}]]})
+        elif data.startswith("feedback:"):
+            parts=data.split(":")
+            if len(parts)!=4 or parts[1] not in ("yes","no"): return
+            try:
+                chat_id,message_id=int(parts[2]),int(parts[3])
+            except ValueError:
+                return
+            approved=self.db.add_feedback(
+                user_id,chat_id,message_id,
+                "relevant" if parts[1]=="yes" else "irrelevant"
+            )
+            self.api.send(user_id,
+                "Спасибо! Оценка сохранена." if approved else "Объявление не найдено в истории.")
         elif data.startswith("review:"):
             if user_id!=self.owner_id:return
             parts=data.split(":")
@@ -346,7 +362,10 @@ class Receiver:
         for uid,chat_id,message_id,title,body,url in self.db.pending():
             content=f"🎬 {title}\n\n{body[:3200]}\n\n{url or ''}"
             try:
-                self.api.send(uid,content)
+                self.api.send(uid,content,reply_markup={"inline_keyboard":[[
+                    {"text":"👍 Подходит","callback_data":"feedback:yes:{}:{}".format(chat_id,message_id)},
+                    {"text":"👎 Не подходит","callback_data":"feedback:no:{}:{}".format(chat_id,message_id)}
+                ]]})
                 self.db.mark_delivery(uid,chat_id,message_id,"sent")
             except TelegramError as exc:
                 if exc.code in (403,400):

@@ -70,6 +70,15 @@ CREATE TABLE IF NOT EXISTS suggestions (
  UNIQUE(user_id, username)
 );
 CREATE INDEX IF NOT EXISTS idx_suggestions_queue ON suggestions(status,id);
+CREATE TABLE IF NOT EXISTS casting_feedback (
+ user_id INTEGER NOT NULL,
+ chat_id INTEGER NOT NULL,
+ message_id INTEGER NOT NULL,
+ verdict TEXT NOT NULL,
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ PRIMARY KEY(user_id,chat_id,message_id),
+ FOREIGN KEY(user_id,chat_id,message_id) REFERENCES deliveries(user_id,chat_id,message_id)
+);
 CREATE TABLE IF NOT EXISTS suggestion_input (
  user_id INTEGER PRIMARY KEY,
  awaiting INTEGER NOT NULL DEFAULT 1
@@ -98,6 +107,29 @@ class Database:
         self.connection = sqlite3.connect(path, check_same_thread=False, timeout=10)
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.executescript(SCHEMA)
+
+    def add_feedback(self, user_id: int, chat_id: int, message_id: int, verdict: str) -> bool:
+        if verdict not in ("relevant","irrelevant"):
+            raise ValueError("invalid feedback")
+        with self.connection:
+            existing=self.connection.execute(
+                "SELECT 1 FROM deliveries WHERE user_id=? AND chat_id=? AND message_id=?",
+                (user_id,chat_id,message_id)
+            ).fetchone()
+            if not existing:
+                return False
+            self.connection.execute(
+                """INSERT INTO casting_feedback(user_id,chat_id,message_id,verdict)
+                   VALUES (?,?,?,?) ON CONFLICT(user_id,chat_id,message_id)
+                   DO UPDATE SET verdict=excluded.verdict,created_at=CURRENT_TIMESTAMP""",
+                (user_id,chat_id,message_id,verdict)
+            )
+        return True
+
+    def feedback_stats(self):
+        return dict(self.connection.execute(
+            "SELECT verdict, COUNT(*) FROM casting_feedback GROUP BY verdict"
+        ).fetchall())
 
     def set_profile_prompt(self, user_id: int, field: str | None):
         with self.connection:
