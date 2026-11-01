@@ -103,6 +103,8 @@ SAFE_AUTH_ERRORS = {
         'Пароль не отправлен: страница Telegram Web недоступна. Проверьте /webstatus и запросите новую ссылку.',
     'Password prompt is not ready':
         'В Telegram Web сейчас нет активного поля пароля. Проверьте /webstatus и запросите новую ссылку.',
+    'Multiple password prompts are visible':
+        'Telegram Web показывает несколько полей пароля. Ссылка отозвана, сканирование остаётся заблокировано; проверьте /webstatus.',
     'Telegram login not completed':
         'Telegram Web не подтвердил завершение входа. Проверьте /webstatus и запросите новую ссылку.',
     'Owner identity not confirmed':

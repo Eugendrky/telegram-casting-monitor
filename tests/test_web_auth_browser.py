@@ -41,8 +41,8 @@ class AuthBrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await reader.status(), 'Требуется облачный пароль')
 
     async def test_password_submit_and_redacted_rejection_on_official_origin(self):
-        fixture = '''<input type="password"><script>
-        document.querySelector('input').addEventListener('keypress', e => {
+        fixture = '''<input type="password" disabled><input type="password" aria-hidden="true"><input id="active" type="password"><script>
+        document.querySelector('#active').addEventListener('keypress', e => {
           if(e.key !== 'Enter') return;
           if(e.target.value === 'test-only') {
             window.appImManager = {managers: {appUsersManager: {
@@ -59,10 +59,10 @@ class AuthBrowserTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, 'отклонил облачный пароль'):
             await reader.submit_password('wrong-test-only')
         self.assertIsNone(await reader.account_id())
-        self.assertEqual(await self.page.locator('input').input_value(), '')
+        self.assertEqual(await self.page.locator('#active').input_value(), '')
         await reader.submit_password('test-only')
         self.assertEqual(await reader.account_id(), '101')
-        self.assertEqual(await self.page.locator('input').input_value(), '')
+        self.assertEqual(await self.page.locator('#active').input_value(), '')
         await self.page.route('https://attacker.test/**',
             lambda route: route.fulfill(body='<input type="password">'))
         await self.page.goto('https://attacker.test/')

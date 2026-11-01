@@ -152,7 +152,7 @@ class CloudWebReader:
             try:
                 return await self._page.evaluate("""() => {
                   const visible = el => {
-                    if (!el || el.disabled || el.getAttribute('aria-hidden') === 'true') return false;
+                    if (!el || el.disabled || el.readOnly || el.getAttribute('aria-hidden') === 'true') return false;
                     const style = getComputedStyle(el);
                     const rect = el.getBoundingClientRect();
                     return style.display !== 'none' && style.visibility !== 'hidden' &&
@@ -205,9 +205,15 @@ class CloudWebReader:
                 or not target.path.startswith('/k/')):
             raise ValueError('Official Telegram Web required')
         async with self._lock:
-            field = self._page.locator('input[type=password]:visible')
-            if await field.count() != 1:
+            # Keep the submission selector aligned with status(): Telegram can
+            # leave disabled password inputs in the DOM during transitions.
+            field = self._page.locator(
+                'input[type=password]:visible:not([disabled]):not([readonly]):not([aria-hidden="true"])')
+            field_count = await field.count()
+            if field_count == 0:
                 raise ValueError('Password prompt is not ready')
+            if field_count > 1:
+                raise ValueError('Multiple password prompts are visible')
             try:
                 await field.fill(password, timeout=5000)
                 await field.press('Enter', timeout=5000)
