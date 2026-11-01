@@ -252,7 +252,8 @@ class CloudWebReader:
             await self.start()
             LOG.info("Telegram Web reader initialized; login required if not yet authorized")
             while True:
-                if self.owner_store is not None and self.owner_store.consented():\n                    await self.scan_once()
+                if self.owner_store is not None and self.owner_store.consented():
+                    await self.scan_once()
                 await asyncio.sleep(30)
         except asyncio.CancelledError:
             raise
