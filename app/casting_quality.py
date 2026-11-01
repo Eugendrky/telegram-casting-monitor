@@ -35,6 +35,12 @@ ROLE = re.compile(r"(акт[её]р|актрис|модел|массовк|ти�
                   r"мужчин|женщин|персонаж|роль|роли|геро|участник|детей)", re.I)
 CASTING = re.compile(r"(кастинг|кинопроб|пробы|съ[её]мк|съ[её]мок|в кино|"
                      r"в сериал|в рекламу|в клип|casting|extras)", re.I)
+STRUCTURED_ROLE_CASTING = (
+    re.compile(r"\b(?:роль|роли)\s*:", re.I),
+    re.compile(r"\b(?:дата|даты)\s*:", re.I),
+    re.compile(r"\b(?:ставка|гонорар|оплата)\s*:", re.I),
+    re.compile(r"(?:заявк[аиу]|для отклика|присылайте|отправьте)", re.I),
+)
 DEADLINE = re.compile(
     r"(?:дедлайн|заявки до|заявления до|отклики до|при[её]м заявок до|"
     r"подача до|отправить до)\s*[:\-]?\s*(\d{1,2})[./](\d{1,2})[./](20\d{2})",
@@ -62,7 +68,13 @@ def actionable(text: str, today: date | None = None) -> tuple[bool, str]:
             continue
         if deadline < today:
             return False, "срок подачи истёк"
-    if not CASTING.search(normalized):
+    # Some established casting channels use a compact form with structured
+    # fields instead of repeating the word "кастинг" in every post. Accept
+    # only the full role + date + pay + application pattern to avoid turning
+    # generic job notices into casting candidates.
+    structured_role = all(pattern.search(normalized)
+                          for pattern in STRUCTURED_ROLE_CASTING)
+    if not CASTING.search(normalized) and not structured_role:
         return False, "нет признаков съёмки/кастинга"
     if not (RECRUITMENT.search(normalized) or ROLE.search(normalized)):
         return False, "нет признаков набора на роль"

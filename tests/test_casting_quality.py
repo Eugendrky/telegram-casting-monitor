@@ -25,6 +25,19 @@ class CastingQualityTests(unittest.TestCase):
                 result=actionable(text,DATE)
                 self.assertEqual(result[0],expected,result)
 
+    def test_structured_casting_post_without_casting_keyword(self):
+        post=("Роль: Офисные сотрудники МУЖЧИНЫ\n"
+              "Дата: 01.11 (возможны другие даты - 04.11, 08.11, 10.11)\n"
+              "Ставка: 2500₽ за смену\n"
+              "Чтобы подать заявку, пришли 2-3 свежих фото и ФИО.\n"
+              "Заявки присылать в Telegram: @ZA_DM_AL")
+        self.assertTrue(actionable(post,DATE)[0])
+        self.assertFalse(match_post(post,PROFILE).matched)
+
+    def test_structured_role_without_application_details_is_not_enough(self):
+        post="Роль: офисный сотрудник. Дата: 01.11. Ставка: 2500₽"
+        self.assertFalse(actionable(post,DATE)[0])
+
     def test_role_ranges_must_match_same_role(self):
         post="Кастинг в Москве.\nЖенщины 20-30 лет\nМужчины 40-50 лет"
         result=match_post(post, PROFILE)
