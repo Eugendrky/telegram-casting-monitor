@@ -1,7 +1,7 @@
 name: Casting monitor checks
 on:
   push:
-    branches: [main, feat/selected-casting-sources-ai-safety]
+    branches: [main, feat/selected-casting-sources-ai-safety, feat/guardian-watchdog-and-privacy]
   pull_request:
 jobs:
   test:
