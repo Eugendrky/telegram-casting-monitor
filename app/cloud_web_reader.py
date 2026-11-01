@@ -201,8 +201,8 @@ class CloudWebReader:
             ):
                 self.state="ожидание авторизации"
                 return
-            chosen=[row for row in self.db.public_sources() if row[3] and row[4] and row[5]]
-            approved={row[5] for row in chosen}
+            chosen=self.owner_store.due()
+            approved={row[0] for row in chosen}
             self.state="поиск источников"
             # At most 200 dialog summaries. No private message history requested.
             peers=select_peers(await self._page.evaluate(INDEX_JS,200),approved)
@@ -234,14 +234,14 @@ class CloudWebReader:
                 except Exception as exc:
                     if "FLOOD_WAIT" in str(exc) or "FLOOD" in str(exc).upper():
                         self.state="Telegram ограничил запросы. Сканирование остановлено"
-                        self.db.update_client_status(sid,
+                        self.owner_store.update_source(name,
                             error="Ограничение Telegram: сканирование остановлено",
                             delay=86400)
                         LOG.error("Telegram Web rate limit; stopping reader")
                         raise RuntimeError("Telegram Web rate limited") from None
                     self.db.update_client_status(sid,
                         error="Не удалось прочитать сообщения из группы",
-                        retry_after=3600)
+                        delay=3600)
                     LOG.warning("Failed to scan selected source %s",name)
                 await asyncio.sleep(3)
             self.state="ожидание следующей проверки"
