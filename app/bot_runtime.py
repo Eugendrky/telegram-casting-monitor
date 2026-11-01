@@ -15,6 +15,7 @@ from app.authorized_reader import run_authorized_reader
 from app.locale_ru import suggestion_status, readable_time, source_error
 from app.source_readiness import readiness_text, empty_castings_text
 from app.quality_guardian import inspect as inspect_quality, render as render_quality, run_guardian
+from app.personal_reader import PersonalReader
 
 log = logging.getLogger("casting.bot")
 HELP = (
@@ -587,6 +588,20 @@ async def run():
             db,api,owner,interval=int(os.getenv('GUARDIAN_INTERVAL_SECONDS','3600')),
             alerts=os.getenv('GUARDIAN_ALERTS','false').casefold() in ('true','1','yes'))
         ) if guardian_enabled else None
+        personal_reader=None
+        personal_task=None
+        if os.getenv("PERSONAL_QR_ENABLED","false").casefold() in ("true","1","yes"):
+            aid=os.getenv("TELEGRAM_API_ID","")
+            ahash=os.getenv("TELEGRAM_API_HASH","")
+            cipher=os.getenv("SESSION_ENCRYPTION_KEY","")
+            if aid.isdigit() and ahash and cipher and owner>0:
+                personal_reader=PersonalReader(
+                    db,api,api_id=int(aid),api_hash=ahash,key=cipher,pilot_user_id=owner,
+                    lookback_hours=int(os.getenv("PUBLIC_LOOKBACK_HOURS","48")))
+                personal_task=asyncio.create_task(personal_reader.run())
+                log.info("Owner-only personal QR pilot enabled, no account connected yet")
+            else:
+                log.error("QR pilot requested but required Telegram credentials are missing")
         public_task=None
         if not client_enabled:
             public_task=asyncio.create_task(monitor_public(
@@ -597,7 +612,62 @@ async def run():
                 updates=await asyncio.to_thread(api.get_updates,db.cursor()+1)
                 for update in updates:
                     try:
-                        await asyncio.to_thread(receiver.process,update)
+                        handled=False
+                        message=update.get("message") or {}
+                        uid=(message.get("from") or {}).get("id")
+                        chat=message.get("chat") or {}
+                        text=(message.get("text") or "").strip()
+                        command=text.partition(" ")[0].split("@")[0].casefold()
+                        if chat.get("type")=="private" and isinstance(uid,int) and (
+                           command in {"/connect","/account","/addmine","/mymine",
+                                       "/scanmine","/mycastings","/disconnect","/cancel_login"}):
+                            handled=True
+                            if uid!=owner or owner<=0:
+                                api.send(uid,"Эта возможность пока испытывается только владельцем.")
+                            elif personal_reader is None:
+                                api.send(uid,"QR-авторизация пока не настроена на сервере. /ready")
+                            elif command=="/connect":
+                                result=await personal_reader.begin(uid)
+                                api.send(uid,result)
+                            elif command=="/cancel_login":
+                                api.send(uid,await personal_reader.cancel(uid))
+                            elif command=="/account":
+                                api.send(uid,"Telegram: "+personal_reader.state(uid))
+                            elif command=="/disconnect":
+                                api.send(uid,"Чтобы удалить личную сессию и личные объявления, "
+                                             "подтверди действие кнопкой.",
+                                    reply_markup={"inline_keyboard":[[
+                                        {"text":"Удалить подключение","callback_data":"personal:delete"},
+                                        {"text":"Отмена","callback_data":"personal:cancel"}]]})
+                            elif command=="/addmine":
+                                try:
+                                    name=personal_reader.store.select_source(uid,text.partition(" ")[2])
+                                    api.send(uid,"Источник @"+name+" выбран. /scanmine")
+                                except ValueError as exc:
+                                    api.send(uid,str(exc))
+                            elif command=="/mymine":
+                                rows=personal_reader.store.sources(uid)
+                                api.send(uid,"Выбранные источники: "+(", ".join("@"+r[0] for r in rows)
+                                    if rows else "пусто. /addmine @username"))
+                            elif command=="/scanmine":
+                                result=await personal_reader.scan_user(uid)
+                                api.send(uid,result)
+                            elif command=="/mycastings":
+                                rows=personal_reader.store.latest(uid)
+                                api.send(uid,"\n\n".join(f"🎬 @{r[0]}\n{r[1][:200]}\n{r[2]}" for r in rows)[:3800]
+                                    if rows else "Сохранённых доставленных кастингов пока нет.")
+                        callback=update.get("callback_query") or {}
+                        action=callback.get("data","")
+                        caller=(callback.get("from") or {}).get("id")
+                        if action in ("personal:delete","personal:cancel"):
+                            handled=True
+                            if caller==owner and personal_reader is not None:
+                                if action=="personal:delete":
+                                    api.send(caller,await personal_reader.disconnect(caller))
+                                else:
+                                    api.send(caller,"Отключение отменено.")
+                        if not handled:
+                            await asyncio.to_thread(receiver.process,update)
                     except TelegramError as exc:
                         log.warning("Update %s failed with Bot API %s",
                                     update.get("update_id"),exc.code)
@@ -618,7 +688,8 @@ async def run():
     finally:
         tasks=[task for task in (locals().get("public_task"),
                                   locals().get("client_task"),
-                                  locals().get("guardian_task")) if task is not None]
+                                  locals().get("guardian_task"),
+                                  locals().get("personal_task")) if task is not None]
         for task in tasks:
             task.cancel()
         if tasks:
