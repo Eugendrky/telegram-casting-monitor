@@ -239,6 +239,22 @@ class Database:
             channel_id=self.add_public(row[2]) if approve else None
             return (row[1],row[2],next_status,channel_id)
 
+    def delete_user_data(self, user_id: int):
+        """Remove this user's profile, delivery/feedback and subscription data.
+
+        Shared castings and other subscribers must stay untouched.
+        """
+        if not isinstance(user_id, int) or user_id<=0:
+            raise ValueError("invalid user")
+        with self.connection:
+            self.connection.execute("DELETE FROM casting_feedback WHERE user_id=?", (user_id,))
+            self.connection.execute("DELETE FROM deliveries WHERE user_id=?", (user_id,))
+            self.connection.execute("DELETE FROM source_preferences WHERE user_id=?", (user_id,))
+            self.connection.execute("DELETE FROM suggestion_input WHERE user_id=?", (user_id,))
+            self.connection.execute("DELETE FROM suggestions WHERE user_id=?", (user_id,))
+            self.connection.execute("DELETE FROM subscribers WHERE user_id=?", (user_id,))
+            self.connection.execute("DELETE FROM meta WHERE key=?", ("profile_prompt:"+str(user_id),))
+
     def admin_counts(self) -> dict:
         tables={"users":"subscribers","sources":"sources","posts":"castings"}
         result={key:self.connection.execute(
