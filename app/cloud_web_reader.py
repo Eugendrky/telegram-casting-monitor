@@ -164,9 +164,9 @@ class CloudWebReader:
             return None
         async with self._lock:
             try:
-                value=await self._page.evaluate("""() => {
+                value=await self._page.evaluate("""async () => {
                   const m=window.appImManager?.managers;
-                  const self=m?.appUsersManager?.getSelf?.();
+                  const self=await m?.appUsersManager?.getSelf?.();
                   return self?.id == null ? null : String(self.id);
                 }""")
                 return value if isinstance(value,str) and value.isdecimal() else None
@@ -180,12 +180,40 @@ class CloudWebReader:
         async with self._lock:
             try:
                 node=self._page.locator("canvas[class*=qrCanvas]").first
-                if await node.count():
-                    return await node.screenshot(timeout=6000)
+                await node.wait_for(state='visible', timeout=12000)
+                return await node.screenshot(timeout=6000)
             except Exception:
                 LOG.warning("Login QR unavailable; no session data exposed")
             return None
 
+    async def submit_password(self, password: str):
+        """Submit only to the official Web K password field, never to Bot API."""
+        from urllib.parse import urlsplit
+        target=urlsplit(self._page.url) if self._page is not None else None
+        if (target is None or target.scheme != 'https' or target.netloc != 'web.telegram.org'
+                or not target.path.startswith('/k/')):
+            raise ValueError('Official Telegram Web required')
+        async with self._lock:
+            field = self._page.locator('input[type=password]:visible')
+            if await field.count() != 1:
+                raise ValueError('Password prompt is not ready')
+            try:
+                await field.fill(password, timeout=5000)
+                await field.press('Enter', timeout=5000)
+                # Wait for the official client to either authenticate or reject.
+                await self._page.wait_for_function("""() =>
+                    !!(window.appImManager?.managers && document.querySelector('#column-left')) ||
+                    !!document.querySelector('input[type=password].error, .input-field.error')
+                """, timeout=20000)
+            except Exception:
+                raise ValueError('Telegram login not completed') from None
+            finally:
+                password = ''
+                try:
+                    if await field.count():
+                        await field.fill('', timeout=1000)
+                except Exception:
+                    pass
     async def scan_once(self):
         if self.owner_store is None or not self.expected_owner:
             raise RuntimeError("Owner-scoped storage and verified identity required")

@@ -34,7 +34,9 @@ HELP = (
     "Предложить новый канал можно через /suggest."
 )
 ADMIN_HELP = ("\n\nДля администратора: /admin, /addsource "
-              "(со ссылкой на канал), /publicstatus.")
+              "(со ссылкой на канал), /publicstatus.\n"
+              "Подключение Telegram Web: /webconnect → /webqr → /webstatus.\n"
+              "Если запрошен облачный пароль: /webauth. Пароль в чат не отправлять.")
 
 def link_for(chat: dict, message_id: int) -> str | None:
     username = chat.get("username")
@@ -592,6 +594,12 @@ async def run():
         web_task=None
         if os.getenv("WEB_QR_PILOT_ENABLED","false").lower() in ("1","true","yes") and owner>0:
             web_pilot=OwnerWebPilot(db,api,owner)
+            auth_base=os.getenv('WEB_AUTH_BASE_URL','').strip()
+            if auth_base:
+                from app.web_auth_portal import AuthPortal
+                web_pilot.auth_portal=AuthPortal(web_pilot,auth_base,
+                    asyncio.get_running_loop(),port=int(os.getenv('PORT','8080')))
+                web_pilot.auth_portal.start()
             web_task=asyncio.create_task(web_pilot.run())
             log.info("Owner-only Telegram Web QR pilot enabled; no automatic login")
         public_task=None
@@ -609,7 +617,7 @@ async def run():
                         sender=(msg.get("from") or {}).get("id")
                         chat=msg.get("chat") or {}
                         cmd=(msg.get("text") or "").strip().split(" ",1)[0].split("@")[0].lower()
-                        allowed={"/webconnect","/webqr","/webstatus","/websource","/websources","/webscan","/webcastings","/webdisconnect"}
+                        allowed={"/webconnect","/webqr","/webauth","/webstatus","/websource","/websources","/webscan","/webcastings","/webdisconnect"}
                         if chat.get("type")=="private" and cmd in allowed:
                             handled=True
                             if sender!=owner or owner<=0:
@@ -629,6 +637,11 @@ async def run():
                                          else "Сначала /webconnect")
                             elif cmd=="/webstatus":
                                 api.send(sender,await web_pilot.status())
+                            elif cmd=="/webauth":
+                                try:
+                                    api.send(sender,await web_pilot.auth_link())
+                                except ValueError:
+                                    api.send(sender,'Ссылка пока недоступна. Сначала /webconnect, /webqr, затем /webstatus. После повторных попыток подождите 10 минут.')
                             elif cmd=="/websource":
                                 try:
                                     name=web_pilot.store.select_source((msg.get("text") or "").partition(" ")[2])
@@ -654,7 +667,8 @@ async def run():
                         caller=(callback.get("from") or {}).get("id")
                         if data.startswith("web:") or data.startswith("webfb:"):
                             handled=True
-                            if caller==owner and web_pilot is not None:
+                            callback_chat=(callback.get('message') or {}).get('chat') or {}
+                            if caller==owner and callback_chat.get('type')=='private' and callback_chat.get('id')==owner and web_pilot is not None:
                                 if data=="web:consent":
                                     web_pilot.store.consent()
                                     api.send(caller,"Подтверждено. Нажмите /webqr.")
@@ -672,6 +686,8 @@ async def run():
                                             api.send(caller,"Оценка сохранена." if ok else "Публикация не найдена.")
                                         except ValueError:
                                             pass
+                            if callback.get('id'):
+                                await asyncio.to_thread(api.call,'answerCallbackQuery',callback_query_id=callback['id'])
                         if not handled:
                             await asyncio.to_thread(receiver.process,update)
                     except TelegramError as exc:
@@ -681,32 +697,31 @@ async def run():
                             await asyncio.sleep(max(2,exc.retry_after))
                         break
                     except Exception:
-                        log.exception("Update handler failed")
-                        break
-                    else: db.advance(update["update_id"])
-                await asyncio.to_thread(receiver.flush)
-            except TelegramError as exc:
-                log.warning("Telegram API error %s",exc.code)
-                await asyncio.sleep(max(5,exc.retry_after))
-            except Exception:
-                log.exception("Polling loop failure")
-                await asyncio.sleep(10)
-    finally:
-        tasks=[task for task in (locals().get("public_task"),
-                                  locals().get("client_task"),
-                                  locals().get("guardian_task"),
-                                  locals().get("web_task")) if task is not None]
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks,return_exceptions=True)
-        if locals().get('web_pilot') is not None and web_pilot.started:
-            await web_pilot.reader._context.close()
-        db.close()
+     …12579 tokens truncated…3dие курсора, дедупликация и фильтрация по анкете. Это *целевые настройки*, полнота охвата пока не доказана.
+6. Подходящие кастинги доставлять пользователю **в личный чат с этим же ботом**, вместе с исходной ссылкой, временем и обратной связью.
 
-def main():
-    logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    asyncio.run(run())
+## Что отвергнуто и почему
 
-if __name__=="__main__":main()
+- **Junction Bot:** пользователь отказался, поскольку для подключения сервис запросил авторизацию его личного Telegram-аккаунта; сторонняя полноценная сессия неприемлема.
+- **Telethon/MTProto через собственные TELEGRAM_API_ID/HASH:** несовместимо с неизменяемым пользовательским ограничением. Не предлагать снова как основной маршрут.
+- **Постоянно включённый Mac пользователя:** нежелательная зависимость; сбор должен работать на сервере.
+- **Один Bot API без доступа к источникам:** Telegram Bot API не получает историю произвольных чужих групп по ссылке. Такой вариант не заменяет собственный читатель.
+
+## Реальное техническое состояние на дату решения
+
+- `app/cloud_web_reader.py`: экспериментальная обвязка Playwright/Telegram Web, использующая недокументированные внутренние интерфейсы; не включена в рабочий запуск, не испытана на трёх реальных группах.
+- `experiment/cloud-qr-login`: отдельный эксперимент QR-входа; не согласован как итоговый продукт с одним ботом.
+- `feat/user-qr-authorized-pilot`: код через Telethon и **собственные Telegram API-ключи**. **Ветка концептуально отклонена для наших требований**. Не развёртывать и не рекомендовать к настройке, пока пользователь явно не поменяет решение.
+- Производство Railway: Bot API + публичные веб-превью, которые не показывают сообщения нужных трёх групп. Работающий Bot API не означает, что сбор кастингов решён.
+
+## Требования безопасности и критерии готовности
+
+- QR и сессия дают серверу чувствительный доступ к Telegram-аккаунту; получить добровольное согласие, изолировать хранилище и процессы пользователей, исключить секреты из GitHub/логов/ответов ИИ, предусмотреть отзыв входа и удаление данных.
+- Недокументированный интерфейс Telegram Web может измениться; риск ограничений Telegram остаётся даже при собственном сервере. Не обещать стабильность и соблюдать правила Telegram.
+- **Перед просьбой отсканировать QR:** проверить работающий браузер на сервере, доставку QR *только* нужному пользователю, подтверждение правильного аккаунта, сохранение и отзыв сессии, один доступный одобренный источник и путь его сообщений до личного уведомления в тестовом режиме.
+- Только после подтверждения одного реального источника подключать остальные два и масштабирование на личные сессии других пользователей.
+- Если доступ к группе отсутствует, сообщить **«источник недоступен»**, а не **«кастингов нет»**.
+
+## Инструкция для следующих разработчиков и помощников
+
+**Читать этот ADR до любых советов о Telegram-авторизации и до изменения проекта.** Пользователь уже много раз обсуждал невозможность создания Telegram API-приложения. Не спрашивать снова `api_id`, `api_hash`, регистрацию на `my.telegram.org`, не советовать Junction и не представлять отвергнутую ветку `feat/user-qr-authorized-pilot` как решение. При любом новом препятствии предложить проверку Telegram Web или честно описать риск и доступные без сессии методы.
