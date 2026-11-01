@@ -694,7 +694,8 @@ async def run():
     finally:
         tasks=[task for task in (locals().get("public_task"),
                                   locals().get("client_task"),
-                                  locals().get("guardian_task"),\n                                  locals().get("web_task")) if task is not None]
+                                  locals().get("guardian_task"),
+                                  locals().get("web_task")) if task is not None]
         for task in tasks:
             task.cancel()
         if tasks:
