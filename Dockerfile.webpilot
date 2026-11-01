@@ -1,0 +1,10 @@
+FROM mcr.microsoft.com/playwright/python:v1.56.0-noble
+WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt playwright==1.56.0
+COPY app ./app
+RUN mkdir -p /data && chmod 700 /data
+ENV SQLITE_PATH=/data/castings.db
+CMD ["python","-m","app.bot_runtime"]
