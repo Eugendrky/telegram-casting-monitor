@@ -1,26 +1,46 @@
-"""No-credentials Chromium smoke check for Telegram Web K on Railway."""
+"""Credential-free Chromium and QR rendering smoke check for Railway."""
 import asyncio
 import logging
-from playwright.async_api import async_playwright
+import tempfile
+from app.cloud_web_reader import CloudWebReader
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-log=logging.getLogger("web.smoke")
+log = logging.getLogger("web.smoke")
+
 
 async def main():
-    async with async_playwright() as playwright:
-        browser=await playwright.chromium.launch(headless=True, args=["--no-sandbox"])
+    with tempfile.TemporaryDirectory(prefix="telegram-web-smoke-") as profile_dir:
+        reader = CloudWebReader(None, None, profile_dir=profile_dir)
         try:
-            page=await browser.new_page(accept_downloads=False)
-            response=await page.goto("https://web.telegram.org/k/",wait_until="domcontentloaded",timeout=45000)
-            await page.wait_for_timeout(4000)
-            title=await page.title()
-            status=response.status if response else None
-            log.info("CHROMIUM_OK; TELEGRAM_WEB_HTTP=%s; TITLE=%r; URL=%s",status,title,page.url)
-            if not status or status>=400 or "web.telegram.org" not in page.url:
-                raise RuntimeError("Telegram Web is not reachable")
-            log.info("SMOKE_SUCCESS: browser and Telegram Web load, no credentials supplied")
+            await reader.start()
+            await asyncio.sleep(8)
+            status = await reader.status()
+            qr_png = await reader.qr_image()
+            meta = await reader._page.evaluate("""() => ({
+                title: document.title,
+                origin: location.origin,
+                canvasClasses: [...document.querySelectorAll('canvas')]
+                    .slice(0, 12).map(node => (node.className || '').toString().slice(0, 100)),
+                qrClassNames: [...document.querySelectorAll('[class*=qr], [class*=QR]')]
+                    .slice(0, 12).map(node => (node.className || '').toString().slice(0, 100)),
+                passwordInput: !!document.querySelector('input[type=password]')
+            })""")
+            # Never print QR contents, session material, or any login tokens.
+            log.info("CHROMIUM_OK: origin=%s title=%s state=%s", meta["origin"], meta["title"], status)
+            log.info("QR_LAYOUT: canvasClasses=%s qrClassNames=%s passwordPrompt=%s",
+                     meta["canvasClasses"], meta["qrClassNames"], meta["passwordInput"])
+            log.info("QR_CAPTURE: available=%s imageBytes=%s", bool(qr_png), len(qr_png or b""))
+            if meta["origin"] != "https://web.telegram.org":
+                raise RuntimeError("Unexpected Telegram Web origin")
+            if not qr_png:
+                raise RuntimeError("Telegram Web QR cannot be captured by current pilot")
+            log.info("SMOKE_SUCCESS: Railway Chromium and anonymous QR rendering verified")
         finally:
-            await browser.close()
+            if reader._context:
+                await reader._context.close()
+            if reader._pw:
+                await reader._pw.stop()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
