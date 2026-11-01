@@ -90,6 +90,25 @@ h1{font-size:24px}p{line-height:1.5}img{width:min(80vw,300px);height:auto;margin
 <p>Сканируйте только этот код в Telegram на телефоне. Ссылка действует 5 минут. Если Telegram запросит облачный пароль, отправьте боту /webauth.</p>
 </main><script>""" + QR_SCRIPT + "</script></html>").encode()
 
+# Only fixed, non-sensitive diagnostics may cross the browser boundary. Never
+# return exception text from Telegram, Playwright, or the request handler.
+SAFE_AUTH_ERRORS = {
+    'Telegram оставил запрос облачного пароля. Проверьте, что он отправлен, и запросите новую ссылку.':
+        'Telegram оставил экран облачного пароля. Вход не подтверждён. Получите новую ссылку командой /webauth.',
+    'Telegram не подтвердил аккаунт владельца. Сканирование осталось заблокировано.':
+        'Telegram завершил шаг пароля, но аккаунт владельца не подтверждён. Сканирование осталось заблокировано; проверьте /webstatus.',
+    'Telegram отклонил облачный пароль или оставил запрос активным':
+        'Telegram оставил экран облачного пароля. Вход не подтверждён. Проверьте /webstatus и запросите новую ссылку командой /webauth.',
+    'Official Telegram Web required':
+        'Пароль не отправлен: страница Telegram Web недоступна. Проверьте /webstatus и запросите новую ссылку.',
+    'Password prompt is not ready':
+        'В Telegram Web сейчас нет активного поля пароля. Проверьте /webstatus и запросите новую ссылку.',
+    'Telegram login not completed':
+        'Telegram Web не подтвердил завершение входа. Проверьте /webstatus и запросите новую ссылку.',
+    'Owner identity not confirmed':
+        'Telegram не подтвердил аккаунт владельца. Сканирование осталось заблокировано; проверьте /webstatus.',
+}
+
 PAGE = ("""<!doctype html><html lang="ru"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Подключение Telegram</title><style>
@@ -267,9 +286,11 @@ class AuthPortal:
                     future = asyncio.run_coroutine_threadsafe(work, portal.loop)
                     try:
                         result = future.result(timeout=35)
-                    except Exception:
+                    except Exception as exc:
                         future.cancel()
-                        self.reply(409, {'message': 'Запрос не завершён. Проверьте /webstatus и запросите новую ссылку.'})
+                        message = SAFE_AUTH_ERRORS.get(str(exc),
+                            'Запрос не завершён. Проверьте /webstatus и запросите новую ссылку.')
+                        self.reply(409, {'message': message})
                         return
                     if self.path == '/auth/qr-image':
                         state, value = result

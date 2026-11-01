@@ -46,7 +46,8 @@ class AuthBrowserTests(unittest.IsolatedAsyncioTestCase):
         await self.page.goto('https://web.telegram.org/k/')
         reader = CloudWebReader(None, None, profile_dir='/unused')
         reader._page = self.page
-        await reader.submit_password('wrong-test-only')
+        with self.assertRaisesRegex(ValueError, 'отклонил облачный пароль'):
+            await reader.submit_password('wrong-test-only')
         self.assertIsNone(await reader.account_id())
         self.assertEqual(await self.page.locator('input').input_value(), '')
         await reader.submit_password('test-only')

@@ -68,7 +68,10 @@ class OwnerWebPilot:
             await self.reader.submit_password(password)
             password = ''
             if not await self.verified():
-                raise ValueError('Owner identity not confirmed')
+                state = await self.reader.status()
+                if state == 'Требуется облачный пароль':
+                    raise ValueError('Telegram оставил запрос облачного пароля. Проверьте, что он отправлен, и запросите новую ссылку.')
+                raise ValueError('Telegram не подтвердил аккаунт владельца. Сканирование осталось заблокировано.')
             return 'Вход завершён, владелец подтверждён. Вернитесь в бота: /webstatus.'
 
     async def auth_link(self):

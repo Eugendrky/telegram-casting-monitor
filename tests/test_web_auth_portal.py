@@ -99,6 +99,16 @@ class PortalTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(token.encode(), body)
         self.assertFalse(self.portal.tickets.valid(token))
 
+    async def test_safe_auth_diagnostic_explains_password_prompt_state(self):
+        token = self.portal.tickets.issue()
+        self.pilot.submit_password.side_effect = ValueError(
+            'Telegram оставил запрос облачного пароля. Проверьте, что он отправлен, и запросите новую ссылку.')
+        status, _, body = await self.request('/auth/password', token,
+                                            {'password': 'private-test'})
+        self.assertEqual(status, 409)
+        self.assertIn('Telegram оставил экран облачного пароля'.encode(), body)
+        self.assertNotIn('private-test'.encode(), body)
+
     async def test_page_has_no_secret_and_security_headers(self):
         token = self.portal.tickets.issue()
         status, headers, body = await self.request('/auth', method='GET')

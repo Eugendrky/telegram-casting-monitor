@@ -205,6 +205,13 @@ class CloudWebReader:
                     !!(window.appImManager?.managers && document.querySelector('#column-left')) ||
                     !!document.querySelector('input[type=password].error, .input-field.error')
                 """, timeout=20000)
+                authenticated = await self._page.evaluate("""() =>
+                    !!(window.appImManager?.managers && document.querySelector('#column-left'))
+                """)
+                if not authenticated:
+                    raise ValueError('Telegram отклонил облачный пароль или оставил запрос активным')
+            except ValueError:
+                raise
             except Exception:
                 raise ValueError('Telegram login not completed') from None
             finally:
