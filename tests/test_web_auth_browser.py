@@ -30,6 +30,16 @@ class AuthBrowserTests(unittest.IsolatedAsyncioTestCase):
         await self.browser.close()
         await self.pw.stop()
 
+    async def test_status_ignores_hidden_password_inputs(self):
+        reader = CloudWebReader(None, None, profile_dir='/unused')
+        reader._page = self.page
+        await self.page.set_content(
+            '<input type="password" style="display:none">'
+            '<canvas class="qrCanvas" width="20" height="20"></canvas>')
+        self.assertEqual(await reader.status(), 'Ожидает входа по QR')
+        await self.page.set_content('<input type="password">')
+        self.assertEqual(await reader.status(), 'Требуется облачный пароль')
+
     async def test_password_submit_and_redacted_rejection_on_official_origin(self):
         fixture = '''<input type="password"><script>
         document.querySelector('input').addEventListener('keypress', e => {

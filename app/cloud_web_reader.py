@@ -150,11 +150,22 @@ class CloudWebReader:
             return "Браузер не запущен"
         async with self._lock:
             try:
-                return await self._page.evaluate("""() => window.appImManager?.managers &&
-                  document.querySelector('#column-left') ? 'Авторизован' :
-                  document.querySelector('input[type=password]') ? 'Требуется облачный пароль' :
-                  document.querySelector('canvas[class*=qrCanvas]') ? 'Ожидает входа по QR' :
-                  'Загружается'""")
+                return await self._page.evaluate("""() => {
+                  const visible = el => {
+                    if (!el || el.disabled || el.getAttribute('aria-hidden') === 'true') return false;
+                    const style = getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style.display !== 'none' && style.visibility !== 'hidden' &&
+                      Number(style.opacity) !== 0 && rect.width > 0 && rect.height > 0;
+                  };
+                  if (window.appImManager?.managers && document.querySelector('#column-left'))
+                    return 'Авторизован';
+                  if ([...document.querySelectorAll('input[type=password]')].some(visible))
+                    return 'Требуется облачный пароль';
+                  if ([...document.querySelectorAll('canvas[class*=qrCanvas]')].some(visible))
+                    return 'Ожидает входа по QR';
+                  return 'Загружается';
+                }""")
             except Exception:
                 return "Нет связи с браузером"
 
