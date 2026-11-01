@@ -80,6 +80,16 @@ def validate_posts(raw, *, now: int, lookback_hours: int=48, cursor: int=0):
     return [(mid,*unique[mid]) for mid in sorted(unique)]
 
 
+def same_account(observed: object, expected: int) -> bool:
+    """Fail closed unless the browser supplies exactly the expected user ID."""
+    if not isinstance(expected,int) or expected<=0:
+        return False
+    if isinstance(observed,bool) or not isinstance(observed,(str,int)):
+        return False
+    value=str(observed)
+    return value.isascii() and value.isdecimal() and str(expected)==value
+
+
 def select_peers(raw, approved: set[str]):
     """Never allow fuzzy title matching or unauthorized group access."""
     if not isinstance(raw,list):
@@ -144,6 +154,21 @@ class CloudWebReader:
                   'Загружается'""")
             except Exception:
                 return "Нет связи с браузером"
+
+    async def account_id(self) -> str | None:
+        """Use the Web K user manager; absence of a reliable ID is an error."""
+        if self._page is None:
+            return None
+        async with self._lock:
+            try:
+                value=await self._page.evaluate("""() => {
+                  const m=window.appImManager?.managers;
+                  const self=m?.appUsersManager?.getSelf?.();
+                  return self?.id == null ? null : String(self.id);
+                }""")
+                return value if isinstance(value,str) and value.isdecimal() else None
+            except Exception:
+                return None
 
     async def qr_image(self) -> bytes | None:
         """An ephemeral auth QR, to be sent solely to the configured owner chat."""
