@@ -115,7 +115,8 @@ def select_peers(raw, approved: set[str]):
 
 class CloudWebReader:
     def __init__(self, db, receiver, *, profile_dir: str,
-                 interval_seconds: int=1800, lookback_hours: int=48,\n                 owner_store=None, expected_owner: int=0):
+                 interval_seconds: int=1800, lookback_hours: int=48,
+                 owner_store=None, expected_owner: int=0):
         self.db=db
         self.receiver=receiver
         self.owner_store=owner_store
