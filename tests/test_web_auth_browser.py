@@ -56,7 +56,9 @@ class AuthBrowserTests(unittest.IsolatedAsyncioTestCase):
         await self.page.goto('https://attacker.test/')
         with self.assertRaises(ValueError):
             await reader.submit_password('test-only')
-        self.assertEqual(await self.page.locator('input').input_value(), '')
+        # The foreign-origin fixture has no password field; rejection happens
+        # before the value is written to any page.
+        self.assertEqual(await self.page.locator('input').count(), 0)
 
     async def test_persistent_profile_survives_browser_restart(self):
         with tempfile.TemporaryDirectory() as folder:
