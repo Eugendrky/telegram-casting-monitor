@@ -40,6 +40,56 @@ if (token) {
 } else {message.textContent = 'Получите новую ссылку командой /webauth в боте.';}
 """
 
+QR_SCRIPT = r"""let token = location.hash.slice(1);
+history.replaceState(null, '', '/qr');
+const image = document.querySelector('#qr');
+const message = document.querySelector('#message');
+let timer = null;
+let previousUrl = null;
+async function refresh() {
+  if (!token) { message.textContent = 'Получите новую ссылку командой /webqr в боте.'; return; }
+  try {
+    const response = await fetch('/auth/qr-image', {method: 'POST', cache: 'no-store',
+      credentials: 'omit', headers: {'Authorization': 'Bearer ' + token,
+      'Content-Type': 'application/json'}, body: '{}'});
+    if (!response.ok) {
+      token = '';
+      message.textContent = 'Ссылка истекла. Получите новую командой /webqr в боте.';
+      return;
+    }
+    if (response.headers.get('Content-Type').startsWith('image/png')) {
+      const nextUrl = URL.createObjectURL(await response.blob());
+      image.src = nextUrl;
+      image.hidden = false;
+      if (previousUrl) URL.revokeObjectURL(previousUrl);
+      previousUrl = nextUrl;
+      message.textContent = 'Откройте Telegram на телефоне → Настройки → Устройства → Добавить устройство. Код обновляется автоматически.';
+    } else {
+      const result = await response.json();
+      image.hidden = true;
+      message.textContent = result.message;
+      if (result.state === 'authorized' || result.state === 'password') token = '';
+    }
+  } catch {
+    message.textContent = 'Нет связи с Telegram Web. Страница попробует обновить QR ещё раз.';
+  }
+  if (token) timer = setTimeout(refresh, 5000);
+}
+refresh();
+"""
+
+QR_PAGE = ("""<!doctype html><html lang="ru"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Вход в Telegram Web</title><style>
+body{font:17px system-ui;background:#f4f6f9;color:#17212b;margin:0;padding:24px 16px}
+main{max-width:440px;margin:6vh auto;background:white;padding:24px;border-radius:16px;text-align:center}
+h1{font-size:24px}p{line-height:1.5}img{width:min(80vw,300px);height:auto;margin:12px auto}
+</style><main><h1>Подключение Telegram</h1>
+<img id="qr" alt="Обновляемый QR для входа в Telegram Web" hidden>
+<p id="message" role="status">Проверяем ссылку и загружаем актуальный QR…</p>
+<p>Сканируйте только этот код в Telegram на телефоне. Ссылка действует 5 минут. Если Telegram запросит облачный пароль, отправьте боту /webauth.</p>
+</main><script>""" + QR_SCRIPT + "</script></html>").encode()
+
 PAGE = ("""<!doctype html><html lang="ru"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Подключение Telegram</title><style>
@@ -150,7 +200,7 @@ class AuthPortal:
             def log_message(self, *args):
                 pass
 
-            def reply(self, status, body, content_type='application/json; charset=utf-8'):
+            def reply(self, status, body, content_type='application/json; charset=utf-8', *, script=None):
                 if isinstance(body, dict):
                     body = json.dumps(body, ensure_ascii=False).encode()
                 self.send_response(status)
@@ -161,23 +211,28 @@ class AuthPortal:
                 self.send_header('X-Content-Type-Options', 'nosniff')
                 self.send_header('X-Frame-Options', 'DENY')
                 self.send_header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
-                digest = base64.b64encode(hashlib.sha256(SCRIPT.encode()).digest()).decode()
-                self.send_header('Content-Security-Policy', "default-src 'none'; script-src 'sha256-" +
-                    digest + "'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; "
-                    "form-action 'none'; frame-ancestors 'none'")
+                script_policy = "'none'"
+                if script is not None:
+                    digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
+                    script_policy = "'sha256-" + digest + "'"
+                self.send_header('Content-Security-Policy', "default-src 'none'; script-src " +
+                    script_policy + "; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' blob:; "
+                    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
                 self.end_headers()
                 self.wfile.write(body)
 
             def do_GET(self):
                 if self.path == '/auth':
-                    self.reply(200, PAGE, 'text/html; charset=utf-8')
+                    self.reply(200, PAGE, 'text/html; charset=utf-8', script=SCRIPT)
+                elif self.path == '/qr':
+                    self.reply(200, QR_PAGE, 'text/html; charset=utf-8', script=QR_SCRIPT)
                 elif self.path == '/healthz':
                     self.reply(200, {'status': 'ok'})
                 else:
                     self.reply(404, {'message': 'Страница не найдена.'})
 
             def do_POST(self):
-                if self.path not in ('/auth/status', '/auth/password'):
+                if self.path not in ('/auth/status', '/auth/password', '/auth/qr-image'):
                     self.reply(404, {'message': 'Страница не найдена.'})
                     return
                 if self.headers.get('Origin') != portal.origin:
@@ -186,7 +241,7 @@ class AuthPortal:
                 auth = self.headers.get('Authorization', '')
                 token = auth[7:] if auth.startswith('Bearer ') else ''
                 if not portal.tickets.valid(token):
-                    self.reply(403, {'message': 'Ссылка недействительна. Получите новую: /webauth.'})
+                    self.reply(403, {'message': 'Ссылка недействительна или истекла.'})
                     return
                 try:
                     length = int(self.headers.get('Content-Length', '0'))
@@ -196,7 +251,9 @@ class AuthPortal:
                     body = json.loads(self.rfile.read(length))
                     if not isinstance(body, dict):
                         raise ValueError()
-                    if self.path == '/auth/password':
+                    if self.path == '/auth/qr-image':
+                        work = portal.pilot.qr_snapshot()
+                    elif self.path == '/auth/password':
                         password = body.get('password')
                         if not isinstance(password, str) or not 1 <= len(password) <= 1024:
                             raise ValueError()
@@ -209,16 +266,25 @@ class AuthPortal:
                         work = portal.pilot.password_ready()
                     future = asyncio.run_coroutine_threadsafe(work, portal.loop)
                     try:
-                        message = future.result(timeout=35)
+                        result = future.result(timeout=35)
                     except Exception:
                         future.cancel()
-                        self.reply(409, {'message': 'Вход не завершён. Проверьте /webstatus; новая ссылка: /webauth.'})
+                        self.reply(409, {'message': 'Запрос не завершён. Проверьте /webstatus и запросите новую ссылку.'})
                         return
-                    self.reply(200, {'message': message})
+                    if self.path == '/auth/qr-image':
+                        state, value = result
+                        if state == 'qr' and isinstance(value, bytes) and value.startswith(bytes.fromhex('89504e470d0a1a0a')):
+                            self.reply(200, value, 'image/png')
+                        else:
+                            if state == 'authorized':
+                                portal.tickets.revoke()
+                            self.reply(200, {'state': state, 'message': value})
+                    else:
+                        self.reply(200, {'message': result})
                 except (ValueError, UnicodeError):
                     self.reply(400, {'message': 'Некорректный запрос.'})
                 finally:
-                    body = None  # Do not retain plaintext beyond this request.
+                    body = None
 
         self.server = BoundedServer((host, port), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -229,8 +295,10 @@ class AuthPortal:
     def link(self):
         return self.origin + '/auth#' + self.tickets.issue()
 
+    def qr_link(self):
+        return self.origin + '/qr#' + self.tickets.issue()
+
     def close(self):
         self.tickets.revoke()
         self.server.shutdown()
         self.server.server_close()
-

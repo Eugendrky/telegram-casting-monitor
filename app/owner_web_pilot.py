@@ -78,6 +78,22 @@ class OwnerWebPilot:
         return ('Вводите облачный пароль только на этой странице, не в чате. '
                 'Одноразовая ссылка действует 5 минут:\n'+self.auth_portal.link())
 
+    async def qr_snapshot(self):
+        """Return only the current official Telegram QR, never account data."""
+        if not self.store.consented() or not self.started:
+            return 'unavailable', 'Сначала подтвердите подключение в боте.'
+        if await self.verified():
+            return 'authorized', 'Вход подтверждён. Вернитесь в бот и выполните /webstatus.'
+        state=await self.reader.status()
+        if state == 'Требуется облачный пароль':
+            return 'password', 'Telegram запросил облачный пароль. Отправьте боту /webauth.'
+        if state != 'Ожидает входа по QR':
+            return 'loading', 'Telegram Web ещё загружается. Код обновится автоматически.'
+        png=await self.reader.qr_image()
+        if not png or not png.startswith(bytes.fromhex('89504e470d0a1a0a')):
+            return 'loading', 'Telegram обновляет код. Подождите несколько секунд.'
+        return 'qr', png
+
     async def qr(self):
         if not self.store.consented():
             return 'Сначала подтвердите подключение: /webconnect.'
@@ -86,6 +102,11 @@ class OwnerWebPilot:
             return "Аккаунт уже подключён. /webstatus"
         if await self.reader.status()=="Требуется облачный пароль":
             return "Требуется пароль двухэтапной проверки: откройте /webauth. В боте пароль вводить нельзя."
+        if self.auth_portal is not None:
+            link=self.auth_portal.qr_link()
+            return ('Откройте ссылку на компьютере и отсканируйте показанный там обновляемый QR '
+                    'в Telegram на телефоне → Настройки → Устройства → Добавить устройство. '
+                    'Ссылка действует 5 минут:\n'+link)
         png=await self.reader.qr_image()
         if not png or not png.startswith(bytes.fromhex("89504e470d0a1a0a")):
             return "QR пока недоступен; повторите /webqr."

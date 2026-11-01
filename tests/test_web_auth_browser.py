@@ -1,5 +1,6 @@
 """Opt-in Chromium tests; no real Telegram credentials or network required."""
 import asyncio
+import base64
 import http.client
 import os
 import tempfile
@@ -113,5 +114,43 @@ class AuthBrowserTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(portal.tickets.valid(token))
             pilot.submit_password.assert_awaited_once_with('test-only')
             self.assertEqual(errors, [])
+        finally:
+            await asyncio.to_thread(portal.close)
+
+    async def test_live_qr_page_refreshes_and_stops_after_authorization(self):
+        pixel = base64.b64decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lX8AAAAASUVORK5CYII=')
+        pilot = Mock()
+        pilot.qr_snapshot = AsyncMock(side_effect=[
+            ('qr', pixel), ('authorized', 'Вход подтверждён.')])
+        portal = AuthPortal(pilot, 'https://bot.test', asyncio.get_running_loop(),
+                            host='127.0.0.1', port=0)
+        portal.start()
+
+        async def proxy(route):
+            request = route.request
+            def forward():
+                conn = http.client.HTTPConnection('127.0.0.1', portal.server.server_port)
+                path = request.url.replace('https://bot.test', '')
+                conn.request(request.method, path, request.post_data,
+                    {k: v for k, v in request.headers.items() if k != 'host'})
+                response = conn.getresponse()
+                data = response.status, dict(response.getheaders()), response.read()
+                conn.close()
+                return data
+            status, headers, body = await asyncio.to_thread(forward)
+            await route.fulfill(status=status, headers=headers, body=body)
+
+        try:
+            await self.page.route('https://bot.test/**', proxy)
+            token = portal.tickets.issue()
+            await self.page.goto('https://bot.test/qr#'+token)
+            await self.page.wait_for_function("document.querySelector('#qr').src.startsWith('blob:')")
+            self.assertEqual(self.page.url, 'https://bot.test/qr')
+            self.assertTrue(portal.tickets.valid(token))
+            await self.page.locator('#message').get_by_text(
+                'Вход подтверждён.', exact=True).wait_for(timeout=8000)
+            self.assertFalse(portal.tickets.valid(token))
+            self.assertEqual(pilot.qr_snapshot.await_count, 2)
         finally:
             await asyncio.to_thread(portal.close)

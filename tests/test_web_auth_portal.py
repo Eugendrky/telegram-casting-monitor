@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import hashlib
 import http.client
 import json
 import tempfile
@@ -8,7 +10,7 @@ from unittest.mock import AsyncMock, Mock
 
 from app.bot_db import Database
 from app.owner_web_pilot import OwnerWebPilot
-from app.web_auth_portal import AuthPortal, LoginTickets, trusted_origin
+from app.web_auth_portal import AuthPortal, LoginTickets, QR_SCRIPT, trusted_origin
 
 
 class TicketTests(unittest.TestCase):
@@ -47,6 +49,8 @@ class PortalTests(unittest.IsolatedAsyncioTestCase):
         self.pilot = Mock()
         self.pilot.password_ready = AsyncMock(return_value='Готово')
         self.pilot.submit_password = AsyncMock(return_value='Вход завершён')
+        self.pilot.qr_snapshot = AsyncMock(return_value=(
+            'qr', bytes.fromhex('89504e470d0a1a0a') + b'test-image'))
         self.portal = AuthPortal(self.pilot, 'https://bot.test',
             asyncio.get_running_loop(), host='127.0.0.1', port=0)
         self.portal.start()
@@ -106,6 +110,36 @@ class PortalTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(b'history.replaceState', body)
         self.assertEqual((await self.request('/auth?token='+token, method='GET'))[0], 404)
 
+    async def test_live_qr_page_and_image_endpoint_are_protected_and_refreshable(self):
+        token = self.portal.tickets.issue()
+        status, headers, body = await self.request('/qr', method='GET')
+        self.assertEqual(status, 200)
+        self.assertNotIn(token.encode(), body)
+        self.assertIn(b'/auth/qr-image', body)
+        self.assertIn(b'setTimeout(refresh, 5000)', body)
+        self.assertEqual(headers['Cache-Control'], 'no-store')
+        self.assertIn(base64.b64encode(hashlib.sha256(QR_SCRIPT.encode()).digest()).decode(),
+                      headers['Content-Security-Policy'])
+        self.assertEqual((await self.request('/auth/qr-image'))[0], 403)
+        self.assertEqual((await self.request('/auth/qr-image', token,
+                         origin='https://attacker.test'))[0], 403)
+        first = await self.request('/auth/qr-image', token)
+        second = await self.request('/auth/qr-image', token)
+        self.assertEqual(first[0], 200)
+        self.assertEqual(first[1]['Content-Type'], 'image/png')
+        self.assertEqual(first[2], second[2])
+        self.assertTrue(self.portal.tickets.valid(token))
+        self.assertEqual(self.pilot.qr_snapshot.await_count, 2)
+
+    async def test_authorized_qr_refresh_revokes_ticket(self):
+        token = self.portal.tickets.issue()
+        self.pilot.qr_snapshot.return_value = (
+            'authorized', 'Вход подтверждён.')
+        status, _, body = await self.request('/auth/qr-image', token)
+        self.assertEqual(status, 200)
+        self.assertIn('authorized', body.decode())
+        self.assertFalse(self.portal.tickets.valid(token))
+
     async def test_invalid_payload_rejected_without_login(self):
         token = self.portal.tickets.issue()
         for body in ({'password': ''}, {'password': 123}, {'password': 'x'*1025}):
@@ -150,6 +184,19 @@ class PilotAuthTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_qr_requires_consent_even_if_called_directly(self):
         self.assertIn('/webconnect', await self.pilot.qr())
+
+    async def test_qr_prefers_live_owner_link_over_stale_photo(self):
+        self.pilot.store.consent()
+        self.pilot.auth_portal = Mock()
+        self.pilot.auth_portal.qr_link.return_value = 'https://bot.test/qr#' + 'x'*43
+        self.pilot.reader.status = AsyncMock(return_value='Ожидает входа по QR')
+        self.pilot.reader.account_id = AsyncMock(return_value=None)
+        self.pilot.start = AsyncMock()
+        result = await self.pilot.qr()
+        self.assertIn('обновляемый QR', result)
+        self.assertIn('/qr#', result)
+        self.pilot.auth_portal.qr_link.assert_called_once_with()
+        self.pilot.api.send_photo.assert_not_called()
 
     async def test_restart_resumes_only_consented_profile(self):
         self.pilot.store.consent()
