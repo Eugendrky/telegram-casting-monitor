@@ -26,18 +26,16 @@ async def login() -> None:
     me = await client.get_me()
     print()
     print(f"Вошли как: {getattr(me, 'username', None) or me.id}")
-    if settings.used_official_api:
-        print("Ключи приложения: официальный Telegram Android (my.telegram.org не нужен).")
     if settings.session:
         print("Использована TELEGRAM_SESSION из .env")
     else:
         print(f"Сессия сохранена в файл: {settings.session_path}")
         print("Дальше достаточно: python -m app.main")
-    saved = StringSession.save(client.session)
-    if saved:
-        print()
-        print("Строка сессии (нужна только если позже понесёте это на сервер):")
-        print(saved)
+    if os.getenv("PRINT_TELEGRAM_SESSION") == "1":
+        saved = StringSession.save(client.session)
+        if saved:
+            print("Секретная строка сессии (не публикуйте):")
+            print(saved)
     print()
     await client.disconnect()
 

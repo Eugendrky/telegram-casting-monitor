@@ -70,6 +70,10 @@ class Settings:
     bot_owner_id: int | None = None
     session_path: Path = field(default_factory=lambda: Path("data/user.session"))
     used_official_api: bool = False
+    scan_enabled: bool = False
+    ai_enabled: bool = False
+    ai_api_key: str = ""
+    ai_model: str = "gpt-4o-mini"
 
 
 def load_settings() -> Settings:
@@ -91,9 +95,7 @@ def load_settings() -> Settings:
     if gender not in {"male", "female", "any"}:
         raise SystemExit("PROFILE_GENDER должен быть male, female или any")
 
-    scan_mode = _env("SCAN_MODE", "all").lower()
-    if scan_mode not in {"all", "title"}:
-        raise SystemExit("SCAN_MODE должен быть all или title")
+    scan_mode = "selected"  # Deprecated broad scan modes are ignored
 
     bot_owner_raw = _env("BOT_OWNER_ID")
     bot_owner_id = int(bot_owner_raw) if bot_owner_raw else None
@@ -118,11 +120,11 @@ def load_settings() -> Settings:
             or ["набор закрыт", "уже набрали", "итоги кастинга"],
         ),
         scan_mode=scan_mode,
-        lookback_hours=_env_int("LOOKBACK_HOURS", 36),
-        messages_per_chat=_env_int("MESSAGES_PER_CHAT", 40),
-        scan_interval_minutes=_env_int("SCAN_INTERVAL_MINUTES", 20),
-        max_notify_per_cycle=_env_int("MAX_NOTIFY_PER_CYCLE", 25),
-        chat_delay_seconds=_env_float("CHAT_DELAY_SECONDS", 0.8),
+        lookback_hours=max(1, min(_env_int("LOOKBACK_HOURS", 36), 72)),
+        messages_per_chat=max(1, min(_env_int("MESSAGES_PER_CHAT", 15), 30)),
+        scan_interval_minutes=max(60, _env_int("SCAN_INTERVAL_MINUTES", 180)),
+        max_notify_per_cycle=max(1, min(_env_int("MAX_NOTIFY_PER_CYCLE", 8), 15)),
+        chat_delay_seconds=max(2.0, _env_float("CHAT_DELAY_SECONDS", 3.0)),
         sqlite_path=sqlite_path,
         notify_peer=_env("NOTIFY_PEER", "me"),
         port=port,
@@ -131,4 +133,8 @@ def load_settings() -> Settings:
         bot_owner_id=bot_owner_id,
         session_path=session_path,
         used_official_api=used_official_api,
+        scan_enabled=_env_bool("SCAN_ENABLED", False),
+        ai_enabled=_env_bool("CASTING_AI_ENABLED", False),
+        ai_api_key=_env("CASTING_AI_API_KEY"),
+        ai_model=_env("CASTING_AI_MODEL", "gpt-4o-mini"),
     )

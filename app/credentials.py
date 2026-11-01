@@ -1,24 +1,19 @@
-"""API identifiers for a local user login without my.telegram.org.
-
-BotFather cannot read groups you merely subscribed to. A user session still
-needs api_id/api_hash. When you cannot register an app, we fall back to the
-identifiers published in the official Telegram Desktop source.
-"""
+"""Only user-registered Telegram application credentials are accepted."""
 
 from __future__ import annotations
 
-# Official Telegram Desktop API identifiers (widely used and currently not flooded).
-# Source: https://github.com/telegramdesktop/tdesktop (and opentele)
-OFFICIAL_DESKTOP_API_ID = 2040
-OFFICIAL_DESKTOP_API_HASH = "b18441a1ff607e10a989891a5462e627"
-
 
 def resolve_api_credentials(api_id: str, api_hash: str) -> tuple[int, str, bool]:
-    """Return (api_id, api_hash, used_official_fallback)."""
-    api_id = (api_id or "").strip()
-    api_hash = (api_hash or "").strip()
-    if api_id and api_hash:
-        return int(api_id), api_hash, False
-    if api_id or api_hash:
-        raise ValueError("TELEGRAM_API_ID и TELEGRAM_API_HASH нужно задавать вместе")
-    return OFFICIAL_DESKTOP_API_ID, OFFICIAL_DESKTOP_API_HASH, True
+    api_id, api_hash = (api_id or "").strip(), (api_hash or "").strip()
+    if not api_id or not api_hash:
+        raise ValueError(
+            "Задайте собственные TELEGRAM_API_ID и TELEGRAM_API_HASH через my.telegram.org. "
+            "Общие ключи Telegram Desktop больше не используются."
+        )
+    try:
+        identifier = int(api_id)
+    except ValueError as exc:
+        raise ValueError("TELEGRAM_API_ID должен быть числом") from exc
+    if identifier <= 0:
+        raise ValueError("TELEGRAM_API_ID должен быть положительным числом")
+    return identifier, api_hash, False

@@ -1,2 +1,3 @@
-telethon==1.42.0
+beautifulsoup4==4.13.4
 python-dotenv==1.2.1
+telethon==1.42.0

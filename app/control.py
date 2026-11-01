@@ -17,6 +17,7 @@ class ScanState:
     last_sent: int = 0
     total_sent: int = 0
     last_error: str | None = None
+    paused: bool = False
 
 
 def _when(value: datetime | None) -> str:
@@ -26,7 +27,9 @@ def _when(value: datetime | None) -> str:
 
 
 def status_text(state: ScanState, settings: Settings) -> str:
-    activity = "идёт поиск" if state.running else "ожидает следующий запуск"
+    activity = ("приостановлен из-за ошибки Telegram" if state.paused else
+                ("выключен" if not settings.scan_enabled else
+                 ("идёт поиск" if state.running else "ожидает следующий запуск")))
     return (
         "📊 Состояние поиска\n\n"
         f"Сейчас: {activity}\n"
@@ -44,15 +47,11 @@ def settings_text(
     settings: Settings, source_mode: str = "configured", selected_count: int = 0,
 ) -> str:
     profile = settings.profile
-    if source_mode == "selected":
-        mode = f"только выбранные ({selected_count})"
-    elif source_mode == "all":
-        mode = "все группы и каналы"
-    else:
-        mode = "все группы и каналы" if settings.scan_mode == "all" else "по названию группы или канала"
+    mode = f"только выбранные ({selected_count})"
     return (
         "⚙️ Текущие настройки\n\n"
         f"Источники: {mode}\n"
+        f"Сбор: {'включён' if settings.scan_enabled else 'отключён (SCAN_ENABLED=false)'}\n"
         f"Город: {profile.city or 'любой'}\n"
         f"Пол: {dict(male='мужской', female='женский', any='любой')[profile.gender]}\n"
         f"Возраст: {profile.age if profile.age is not None else 'любой'}\n"

@@ -6,8 +6,8 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 
 from telethon import TelegramClient
-from telethon.errors import FloodWaitError, RPCError
-from telethon.tl.custom.dialog import Dialog
+from telethon.errors import FloodWaitError, RPCError, AuthKeyError, UnauthorizedError
+from telethon.tl.types import InputPeerChannel, InputPeerChat
 from telethon.tl.custom.message import Message
 
 from app.bot import BotController
@@ -16,14 +16,14 @@ from app.config import Settings, load_settings
 from app.control import ScanState
 from app.links import message_link
 from app.matcher import match_post
+from app.ai import review_casting
 from app.store import Store
-from app.sources import source_allowed
 
 log = logging.getLogger("castings")
 Notify = Callable[[str], Awaitable[None]]
 
 
-def _format_notice(dialog: Dialog, message: Message, reasons: list[str], score: int) -> str:
+def _format_notice(dialog, message: Message, reasons: list[str], score: int) -> str:
     text = (message.raw_text or "").strip()
     if len(text) > 1800:
         text = text[:1800] + "…"
@@ -57,99 +57,121 @@ async def _health_server(port: int) -> asyncio.AbstractServer:
     return server
 
 
-async def _scan_entity(
-    client: TelegramClient,
-    entity,
-    name: str,
-    settings: Settings,
-    store: Store,
-    notify: Notify,
-    cutoff: datetime,
-    sent: int,
-) -> int:
-    try:
-        async for message in client.iter_messages(entity, limit=settings.messages_per_chat):
-            if message.date is None:
-                continue
-            msg_date = message.date if message.date.tzinfo else message.date.replace(tzinfo=timezone.utc)
-            if msg_date < cutoff:
-                break
-            chat_id = getattr(entity, "id", 0)
-            if store.is_seen(chat_id, message.id):
-                continue
-            result = match_post(message.raw_text or "", settings.profile)
-            if not result.matched:
-                store.mark(chat_id, message.id, False)
-                continue
-            if sent >= settings.max_notify_per_cycle:
-                log.info("лимит уведомлений за цикл (%s)", settings.max_notify_per_cycle)
-                return sent
-            notice = _format_notice(type("D", (), {"name": name})(), message, result.reasons, result.score)
+def _selected_peer(source):
+    peer_id, access_hash = source["peer_id"], source["access_hash"]
+    peer_kind, username = source["peer_kind"], source["username"]
+    if peer_kind == "channel" and peer_id and access_hash is not None:
+        return InputPeerChannel(peer_id, access_hash)
+    if peer_kind == "chat" and peer_id:
+        return InputPeerChat(peer_id)
+    return username or None
+
+
+async def _scan_entity(client, entity, chat_id: int, name: str, settings: Settings,
+                       store: Store, notify: Notify, sent: int) -> int:
+    """Read only recent posts from an explicitly selected source, with a durable cursor."""
+    cursor = store.cursor(chat_id)
+    first_run = cursor == 0
+    pending = []
+    # The first read is deliberately bounded and not a full historical backfill.
+    async for message in client.iter_messages(
+        entity, limit=settings.messages_per_chat,
+        **({} if first_run else {"min_id": cursor, "reverse": True}),
+    ):
+        if message.date is None:
+            continue
+        if first_run and message.date < datetime.now(timezone.utc) - timedelta(hours=settings.lookback_hours):
+            break
+        pending.append(message)
+    if first_run:
+        pending.reverse()
+    for message in pending:
+        if sent >= settings.max_notify_per_cycle:
+            break  # Do not advance past unprocessed messages.
+        if store.is_seen(chat_id, message.id):
+            store.advance_cursor(chat_id, message.id)
+            continue
+        result = match_post(message.raw_text or "", settings.profile)
+        if result.matched:
+            review = await review_casting(message.raw_text or "", settings)
+            if review is not None:
+                if not review["is_casting"] or not review["fits_profile"]:
+                    store.mark(chat_id, message.id, False)
+                    store.advance_cursor(chat_id, message.id)
+                    continue
+                result.reasons.append("ИИ: " + review["reason"])
+            notice = _format_notice(type("Source", (), {"name": name})(),
+                                    message, result.reasons, result.score)
+            store.record_casting(chat_id, message.id, name, message.raw_text or "",
+                                 message_link(message), result.score, "; ".join(result.reasons))
             await notify(notice)
-            store.mark(chat_id, message.id, True)
+            store.mark_delivered(chat_id, message.id)
             sent += 1
-            log.info("матч %s / %s (score %s)", name, message.id, result.score)
-    except FloodWaitError as exc:
-        log.warning("FloodWait %ss на чате %s", exc.seconds, name)
-        await asyncio.sleep(exc.seconds + 1)
-    except RPCError:
-        log.exception("ошибка Telegram на чате %s", name)
-    await asyncio.sleep(settings.chat_delay_seconds)
+        store.mark(chat_id, message.id, result.matched)
+        store.advance_cursor(chat_id, message.id)
     return sent
 
 
-async def scan_once(
-    client: TelegramClient,
-    settings: Settings,
-    store: Store,
-    notify: Notify | None = None,
-) -> int:
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.lookback_hours)
-    sent = 0
-    dialogs = 0
-
+async def scan_once(client: TelegramClient, settings: Settings, store: Store,
+                    notify: Notify | None = None) -> int:
+    if not settings.scan_enabled:
+        log.info("scan disabled: set SCAN_ENABLED=true after account access is restored")
+        return 0
     if notify is None:
         async def notify(text: str) -> None:
             await client.send_message(settings.notify_peer, text, parse_mode=None, link_preview=False)
-
-    source_mode = store.source_mode()
-    chosen_sources = store.selected_source_ids() if source_mode == "selected" else set()
-
-    # 1. Обычные диалоги
-    async for dialog in client.iter_dialogs():
-        if not source_allowed(dialog, settings.scan_mode, source_mode, chosen_sources):
+    sources = store.monitored_sources()
+    sent = 0
+    scanned_ids = set()
+    for source in sources:
+        peer = _selected_peer(source)
+        if peer is None:
+            log.warning("source %s cannot be resolved without a username or cached peer", source["title"])
             continue
-        dialogs += 1
-        sent = await _scan_entity(client, dialog.entity, dialog.name or "?", settings, store, notify, cutoff, sent)
+        if source["chat_id"] is None and source["username"]:
+            # Resolve explicitly added public sources once and persist peer metadata.
+            try:
+                entity = await client.get_entity(source["username"])
+                peer_kind = "channel" if getattr(entity, "access_hash", None) is not None else "chat"
+                from telethon import utils as telegram_utils
+                chat_id = telegram_utils.get_peer_id(entity)
+                store.update_custom_peer(source["username"], chat_id=chat_id,
+                    title=getattr(entity, "title", None) or source["title"],
+                    peer_id=entity.id, access_hash=getattr(entity, "access_hash", None),
+                    peer_kind=peer_kind)
+                source["chat_id"] = chat_id
+                source["title"] = getattr(entity, "title", None) or source["title"]
+                peer = _selected_peer({**source, "peer_id": entity.id,
+                    "access_hash": getattr(entity, "access_hash", None),
+                    "peer_kind": peer_kind})
+            except (FloodWaitError, AuthKeyError, UnauthorizedError):
+                raise
+            except RPCError as exc:
+                log.warning("source resolution failed: %s", type(exc).__name__)
+                continue
+        chat_id, name = source["chat_id"], source["title"]
+        if chat_id is None or chat_id in scanned_ids:
+            continue
+        scanned_ids.add(chat_id)
+        try:
+            sent = await _scan_entity(client, peer, chat_id, name, settings, store, notify, sent)
+        except (FloodWaitError, AuthKeyError, UnauthorizedError):
+            raise  # STOP; never hammer Telegram when access is restricted.
+        except RPCError as exc:
+            log.warning("source %s unavailable: %s", chat_id, type(exc).__name__)
         if sent >= settings.max_notify_per_cycle:
             break
-
-    # 2. Вручно добавленные по username
-    if source_mode == "selected" or not chosen_sources:
-        for username, title, _ in store.custom_sources():
-            try:
-                entity = await client.get_entity(username)
-                name = getattr(entity, "title", None) or title or username
-                dialogs += 1
-                sent = await _scan_entity(client, entity, name, settings, store, notify, cutoff, sent)
-                if sent >= settings.max_notify_per_cycle:
-                    break
-            except Exception as exc:
-                log.warning("не удалось открыть @%s: %s", username, exc)
-
-    log.info("цикл: чатов %s, уведомлений %s", dialogs, sent)
+        await asyncio.sleep(settings.chat_delay_seconds)
+    log.info("cycle: selected sources %s, notices %s", len(sources), sent)
     return sent
 
 
-async def _scan_loop(
-    client: TelegramClient,
-    settings: Settings,
-    store: Store,
-    notify: Notify,
-    state: ScanState,
-    wake_scan: asyncio.Event,
-) -> None:
+async def _scan_loop(client: TelegramClient, settings: Settings, store: Store,
+                     notify: Notify, state: ScanState, wake_scan: asyncio.Event) -> None:
     while True:
+        if state.paused:
+            log.error("Monitoring paused: manual inspection is required")
+            return
         state.running = True
         state.last_sent = 0
         state.cycles += 1
@@ -159,16 +181,19 @@ async def _scan_loop(
             state.last_sent = count
             state.total_sent += count
             state.last_error = None
-        except FloodWaitError as exc:
-            state.last_error = f"Telegram просит подождать {exc.seconds} секунд"
-            log.warning(state.last_error)
-            await asyncio.sleep(exc.seconds + 1)
+        except (FloodWaitError, AuthKeyError, UnauthorizedError) as exc:
+            state.last_error = f"Telegram ограничил доступ: {type(exc).__name__}"
+            state.paused = True
+            log.error("Telegram access restricted: %s. Stopping scanner.", type(exc).__name__)
         except Exception as exc:
             state.last_error = type(exc).__name__
-            log.exception("сбой цикла сканирования")
+            state.paused = True
+            log.exception("Scanning failed; stopping until the cause is inspected")
         finally:
             state.running = False
             state.last_finished = datetime.now(timezone.utc)
+        if state.paused:
+            return
         try:
             await asyncio.wait_for(wake_scan.wait(), timeout=settings.scan_interval_minutes * 60)
         except asyncio.TimeoutError:
@@ -178,13 +203,17 @@ async def _scan_loop(
 
 async def worker(settings: Settings) -> None:
     store = Store(settings.sqlite_path)
-    client = user_client(settings)
+    client: TelegramClient | None = user_client(settings) if settings.scan_enabled else None
     bot_client: TelegramClient | None = None
     health = await _health_server(settings.port) if settings.port > 0 else None
     state = ScanState()
     wake_scan = asyncio.Event()
 
     def request_scan() -> str:
+        if not settings.scan_enabled:
+            return "⏸ Сканирование выключено. Проверьте доступ к аккаунту и SCAN_ENABLED."
+        if state.paused:
+            return "⛔ Telegram ограничил доступ или произошла ошибка. Изучите журнал и устраните причину."
         if state.running:
             return "🔎 Проверка уже выполняется. Результаты придут сюда автоматически."
         if wake_scan.is_set():
@@ -193,12 +222,20 @@ async def worker(settings: Settings) -> None:
         return "🔎 Запускаю внеочередной поиск. Подходящие кастинги пришлю сюда."
 
     try:
-        async with client:
+        if not settings.bot_owner_id and not settings.scan_enabled:
+            raise RuntimeError("Set BOT_OWNER_ID to run the control bot without a user session")
+        if settings.scan_enabled and not store.monitored_sources():
+            raise RuntimeError("No selected sources. Keep SCAN_ENABLED=false until sources are selected.")
+        if client is not None:
+            await client.connect()
+            if not await client.is_user_authorized():
+                raise RuntimeError("Telegram user session not authorized; stop monitoring")
             me = await client.get_me()
-            log.info("вошли как %s", getattr(me, "username", None) or me.id)
-            if settings.used_official_api:
-                log.info("api_id взят из открытого исходника Telegram Desktop")
-            owner_id = settings.bot_owner_id or me.id
+            log.info("authorized user session")
+        else:
+            me = None
+        owner_id = settings.bot_owner_id or me.id
+        try:
             if settings.bot_token:
                 bot_session = str(settings.sqlite_path.parent / "casting_bot")
                 bot_client = TelegramClient(bot_session, settings.api_id, settings.api_hash)
@@ -214,8 +251,17 @@ async def worker(settings: Settings) -> None:
                 else:
                     await client.send_message(settings.notify_peer, text, parse_mode=None, link_preview=False)
 
-            await _scan_loop(client, settings, store, notify, state, wake_scan)
+            if settings.scan_enabled:
+                await _scan_loop(client, settings, store, notify, state, wake_scan)
+            else:
+                log.warning("SCAN_ENABLED=false. Monitoring stopped by default.")
+                if bot_client is not None:
+                    await bot_client.run_until_disconnected()
+        finally:
+            if client is not None:
+                await client.disconnect()
     finally:
+        store.close()
         if bot_client is not None:
             await bot_client.disconnect()
         if health is not None:

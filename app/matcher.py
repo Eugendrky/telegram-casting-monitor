@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 
 from app.config import Profile
+from app.casting_quality import actionable
 
 _YO = str.maketrans({"ё": "е", "Ё": "е"})
 
@@ -215,8 +216,9 @@ def match_post(text: str, profile: Profile) -> MatchResult:
     reasons: list[str] = []
     score = 0
 
-    if not body.strip():
-        return MatchResult(False, 0, ["нет текста"])
+    safe, explanation = actionable(text)
+    if not safe:
+        return MatchResult(False, 0, [explanation])
 
     if _contains_any(body, profile.exclude_keywords):
         return MatchResult(False, 0, ["стоп-слово"])
@@ -237,9 +239,43 @@ def match_post(text: str, profile: Profile) -> MatchResult:
     score += min(5, len(hint_hits) + len(extra_hits))
     reasons.append("кастинг: " + ", ".join((hint_hits + extra_hits)[:4]))
 
-    both = _contains_any(body, BOTH_HINTS)
-    female = _contains_any(body, FEMALE_HINTS)
-    male = _contains_any(body, MALE_HINTS)
+    # When the post lists several roles on separate lines or semicolons,
+    # match gender, age and height within one role. Never combine attributes
+    # from two incompatible roles to create a false match.
+    role_body = body
+    segments = [part.strip() for part in re.split(r"[\n;]+", body) if part.strip()]
+    role_segments = [
+        part for part in segments
+        if (_contains_any(part, FEMALE_HINTS) or _contains_any(part, MALE_HINTS))
+        and (_age_windows(part) or _height_windows(part))
+    ]
+    if len(role_segments) >= 2:
+        compatible = []
+        for part in role_segments:
+            sf = _contains_any(part, FEMALE_HINTS)
+            sm = _contains_any(part, MALE_HINTS)
+            if profile.gender == "female" and sm and not sf:
+                continue
+            if profile.gender == "male" and sf and not sm:
+                continue
+            age_ranges = _age_windows(part)
+            if profile.age is not None and age_ranges and not any(
+                lo <= profile.age <= hi for lo, hi in age_ranges
+            ):
+                continue
+            heights = _height_windows(part)
+            if profile.height_cm is not None and heights and not any(
+                lo <= profile.height_cm <= hi for lo, hi in heights
+            ):
+                continue
+            compatible.append(part)
+        if not compatible:
+            return MatchResult(False, score, reasons + ["нет подходящей роли"])
+        role_body = " ".join(compatible)
+
+    both = _contains_any(role_body, BOTH_HINTS)
+    female = _contains_any(role_body, FEMALE_HINTS)
+    male = _contains_any(role_body, MALE_HINTS)
     if profile.gender == "female" and male and not female and not both:
         return MatchResult(False, score, reasons + ["только мужской типаж"])
     if profile.gender == "male" and female and not male and not both:
@@ -252,7 +288,7 @@ def match_post(text: str, profile: Profile) -> MatchResult:
         reasons.append("мужской/смешанный типаж")
 
     if profile.age is not None:
-        windows = _age_windows(body)
+        windows = _age_windows(role_body)
         if windows and not any(lo <= profile.age <= hi for lo, hi in windows):
             return MatchResult(False, score, reasons + ["возраст не подходит"])
         if windows:
@@ -260,7 +296,7 @@ def match_post(text: str, profile: Profile) -> MatchResult:
             reasons.append("возраст в диапазоне")
 
     if profile.height_cm is not None:
-        windows = _height_windows(body)
+        windows = _height_windows(role_body)
         if windows and not any(lo <= profile.height_cm <= hi for lo, hi in windows):
             return MatchResult(False, score, reasons + ["рост не подходит"])
         if windows:

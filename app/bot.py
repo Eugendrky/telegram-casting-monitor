@@ -29,7 +29,7 @@ class BotController:
         settings: Settings,
         state: ScanState,
         request_scan: Callable[[], str],
-        user_client: TelegramClient,
+        user_client: TelegramClient | None,
         store: Store,
     ) -> None:
         self.client = client
@@ -41,6 +41,7 @@ class BotController:
         self.store = store
         self._sources_cache: list[tuple[int, str, str]] | None = None
         self._sources_loaded_at = 0.0
+        self._source_entities = {}
 
     @staticmethod
     def _menu() -> list[list[Button]]:
@@ -54,8 +55,10 @@ class BotController:
         if action in {"start", "help"}:
             return (
                 "🎬 Мой помощник по кастингам\n\n"
-                "Собираю подходящие объявления из Telegram-групп и каналов.\n\n"
+                "Проверяю только выбранные группы и каналы.\n\n"
                 "Команды:\n"
+                "/castings — последние сохранённые кастинги\n"
+                "/removesource @username — удалить источник\n"
                 "/sources — выбрать из уже подписанных\n"
                 "/addsource @username или ссылка — добавить группу вручную\n"
                 "/listsources — показать вручно добавленные\n"
@@ -77,11 +80,15 @@ class BotController:
         if (not refresh and self._sources_cache is not None
                 and time.monotonic() - self._sources_loaded_at < CACHE_SECONDS):
             return self._sources_cache
+        if self.user_client is None:
+            return []
         sources = []
+        self._source_entities = {}
         async for dialog in self.user_client.iter_dialogs():
             if is_source_dialog(dialog):
                 kind = "👥" if dialog.is_group else "📣"
                 sources.append((dialog.id, dialog.name or "Без названия", kind))
+                self._source_entities[dialog.id] = dialog.entity
         sources.sort(key=lambda item: (item[1].casefold(), item[0]))
         self._sources_cache = sources
         self._sources_loaded_at = time.monotonic()
@@ -96,12 +103,7 @@ class BotController:
         mode = self.store.source_mode()
         page_count = max(1, (len(sources) + PAGE_SIZE - 1) // PAGE_SIZE)
         page = max(0, min(page, page_count - 1))
-        if mode == "selected":
-            state = f"только выбранные ({len(selected)} + {len(custom)} вручных)"
-        elif mode == "all":
-            state = "все группы и каналы"
-        else:
-            state = f"по настройке SCAN_MODE ({self.settings.scan_mode})"
+        state = f"только выбранные ({len(selected)} + {len(custom)} вручных)"
         text = (
             f"📚 Источники кастингов\n\nРежим: {state}\n"
             f"Доступно групп и каналов: {len(sources)}\n"
@@ -109,6 +111,8 @@ class BotController:
             "Нажми на название, чтобы включить/исключить.\n"
             "Или используй /addsource @username"
         )
+        if self.user_client is None:
+            text += "\n\nСписок ваших подписок доступен только при разрешённом подключении аккаунта. Добавляйте публичные источники через /addsource."
         if mode == "selected" and not selected and not custom:
             text += "\n\n⚠️ Не выбрано ни одного источника."
 
@@ -123,8 +127,7 @@ class BotController:
             navigation.append(Button.inline("Далее ➡️", f"src:page:{page + 1}".encode()))
         if navigation:
             buttons.append(navigation)
-        buttons.append([Button.inline("🌍 Все источники", b"src:mode:all"),
-                        Button.inline("☑️ Только выбранные", b"src:mode:selected")])
+        buttons.append([Button.inline("☑️ Проверяются только выбранные", b"src:mode:selected")])
         buttons.append([Button.inline("🔄 Обновить", f"src:refresh:{page}".encode()),
                         Button.inline("🏠 Меню", b"start")])
         return text, buttons
@@ -145,7 +148,7 @@ class BotController:
                 chat_id, page = int(parts[2]), int(parts[3])
                 if page < 0:
                     raise ValueError("negative page")
-            elif kind == "mode" and len(parts) == 3 and parts[2] in {"all", "selected"}:
+            elif kind == "mode" and len(parts) == 3 and parts[2] == "selected":
                 pass
             else:
                 raise ValueError("invalid callback")
@@ -160,7 +163,17 @@ class BotController:
                 if candidate is None:
                     await event.answer("Источник недоступен. Обнови список.", alert=True)
                     return
-                self.store.toggle_source(candidate[0], candidate[1])
+                # Save the peer from the explicit source-list action for future direct reads.
+                entity = self._source_entities.get(candidate[0])
+                if entity is None:
+                    await event.answer("Обнови список источников", alert=True)
+                    return
+                kind = "channel" if getattr(entity, "access_hash", None) is not None else "chat"
+                self.store.toggle_source(
+                    candidate[0], candidate[1], peer_id=entity.id,
+                    access_hash=getattr(entity, "access_hash", None),
+                    peer_kind=kind, username=getattr(entity, "username", None),
+                )
             elif kind == "mode":
                 self.store.set_source_mode(parts[2])
             text, buttons = await self._sources_screen(page, refresh=(kind == "refresh"))
@@ -202,6 +215,27 @@ class BotController:
                     return
                 self.store.add_custom_source(username)
                 await event.respond(f"✅ Добавил @{username} в список источников.", parse_mode=None)
+                return
+
+            if command == "/removesource":
+                match = USERNAME_RE.search(args)
+                if not match:
+                    await event.respond("Напиши: /removesource @username", parse_mode=None)
+                    return
+                username = (match.group(1) or match.group(2) or "").lower()
+                self.store.remove_custom_source(username)
+                await event.respond(f"Источник @{username} удалён.", parse_mode=None)
+                return
+
+            if command == "/castings":
+                records = self.store.latest_castings(8)
+                if not records:
+                    await event.respond("Сохранённых кастингов пока нет.", parse_mode=None)
+                    return
+                lines = [f"{i}. {row[0]} · оценка {row[3]}\n{row[1][:150]}\n{row[2]}"
+                         for i, row in enumerate(records, 1)]
+                await event.respond("🎬 Последние кастинги\n\n" + "\n\n".join(lines),
+                                    parse_mode=None, link_preview=False)
                 return
 
             if command == "/listsources":
