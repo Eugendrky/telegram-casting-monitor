@@ -2,3 +2,4 @@ beautifulsoup4==4.13.4
 python-dotenv==1.2.1
 telethon==1.42.0
 cryptography==46.0.3
+qrcode[pil]==8.2
