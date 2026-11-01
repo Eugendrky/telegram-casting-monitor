@@ -697,31 +697,36 @@ async def run():
                             await asyncio.sleep(max(2,exc.retry_after))
                         break
                     except Exception:
-     …12579 tokens truncated…3dие курсора, дедупликация и фильтрация по анкете. Это *целевые настройки*, полнота охвата пока не доказана.
-6. Подходящие кастинги доставлять пользователю **в личный чат с этим же ботом**, вместе с исходной ссылкой, временем и обратной связью.
+                        log.exception("Update handler failed")
+                        break
+                    else: db.advance(update["update_id"])
+                await asyncio.to_thread(receiver.flush)
+            except TelegramError as exc:
+                log.warning("Telegram API error %s",exc.code)
+                await asyncio.sleep(max(5,exc.retry_after))
+            except Exception:
+                log.exception("Polling loop failure")
+                await asyncio.sleep(10)
+    finally:
+        tasks=[task for task in (locals().get("public_task"),
+                                  locals().get("client_task"),
+                                  locals().get("guardian_task"),
+                                  locals().get("web_task")) if task is not None]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks,return_exceptions=True)
+        if locals().get('web_pilot') is not None and web_pilot.started:
+            await web_pilot.reader._context.close()
+            if web_pilot.reader._pw:
+                await web_pilot.reader._pw.stop()
+        if locals().get('web_pilot') is not None and web_pilot.auth_portal:
+            await asyncio.to_thread(web_pilot.auth_portal.close)
+        db.close()
 
-## Что отвергнуто и почему
+def main():
+    logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    asyncio.run(run())
 
-- **Junction Bot:** пользователь отказался, поскольку для подключения сервис запросил авторизацию его личного Telegram-аккаунта; сторонняя полноценная сессия неприемлема.
-- **Telethon/MTProto через собственные TELEGRAM_API_ID/HASH:** несовместимо с неизменяемым пользовательским ограничением. Не предлагать снова как основной маршрут.
-- **Постоянно включённый Mac пользователя:** нежелательная зависимость; сбор должен работать на сервере.
-- **Один Bot API без доступа к источникам:** Telegram Bot API не получает историю произвольных чужих групп по ссылке. Такой вариант не заменяет собственный читатель.
-
-## Реальное техническое состояние на дату решения
-
-- `app/cloud_web_reader.py`: экспериментальная обвязка Playwright/Telegram Web, использующая недокументированные внутренние интерфейсы; не включена в рабочий запуск, не испытана на трёх реальных группах.
-- `experiment/cloud-qr-login`: отдельный эксперимент QR-входа; не согласован как итоговый продукт с одним ботом.
-- `feat/user-qr-authorized-pilot`: код через Telethon и **собственные Telegram API-ключи**. **Ветка концептуально отклонена для наших требований**. Не развёртывать и не рекомендовать к настройке, пока пользователь явно не поменяет решение.
-- Производство Railway: Bot API + публичные веб-превью, которые не показывают сообщения нужных трёх групп. Работающий Bot API не означает, что сбор кастингов решён.
-
-## Требования безопасности и критерии готовности
-
-- QR и сессия дают серверу чувствительный доступ к Telegram-аккаунту; получить добровольное согласие, изолировать хранилище и процессы пользователей, исключить секреты из GitHub/логов/ответов ИИ, предусмотреть отзыв входа и удаление данных.
-- Недокументированный интерфейс Telegram Web может измениться; риск ограничений Telegram остаётся даже при собственном сервере. Не обещать стабильность и соблюдать правила Telegram.
-- **Перед просьбой отсканировать QR:** проверить работающий браузер на сервере, доставку QR *только* нужному пользователю, подтверждение правильного аккаунта, сохранение и отзыв сессии, один доступный одобренный источник и путь его сообщений до личного уведомления в тестовом режиме.
-- Только после подтверждения одного реального источника подключать остальные два и масштабирование на личные сессии других пользователей.
-- Если доступ к группе отсутствует, сообщить **«источник недоступен»**, а не **«кастингов нет»**.
-
-## Инструкция для следующих разработчиков и помощников
-
-**Читать этот ADR до любых советов о Telegram-авторизации и до изменения проекта.** Пользователь уже много раз обсуждал невозможность создания Telegram API-приложения. Не спрашивать снова `api_id`, `api_hash`, регистрацию на `my.telegram.org`, не советовать Junction и не представлять отвергнутую ветку `feat/user-qr-authorized-pilot` как решение. При любом новом препятствии предложить проверку Telegram Web или честно описать риск и доступные без сессии методы.
+if __name__=="__main__":main()

@@ -102,35 +102,63 @@ class OwnerWebPilot:
             await self.reader.scan_once()
             await self.deliver()
         status=[]
-  …3805 tokens truncated…38спользована.'})
-                            return
-                        work = portal.pilot.submit_password(password)
-                        del password
-                    else:
-                        work = portal.pilot.password_ready()
-                    future = asyncio.run_coroutine_threadsafe(work, portal.loop)
-                    try:
-                        message = future.result(timeout=35)
-                    except Exception:
-                        future.cancel()
-                        self.reply(409, {'message': 'Вход не завершён. Проверьте /webstatus; новая ссылка: /webauth.'})
-                        return
-                    self.reply(200, {'message': message})
-                except (ValueError, UnicodeError):
-                    self.reply(400, {'message': 'Некорректный запрос.'})
-                finally:
-                    body = None  # Do not retain plaintext beyond this request.
+        for name,cursor,next_scan,checked,success,error,visible,new,truncated in self.store.sources():
+            status.append(f"@{name}: "+(error or f"проверено {visible}, новых {new}"))
+        return "\n".join(status) if status else "Нет выбранных источников. /websource @moscowfilms"
 
-        self.server = BoundedServer((host, port), Handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+    async def deliver(self):
+        if not await self.verified():
+            return
+        for _ in range(12):
+            item=self.store.claim_next()
+            if not item:
+                break
+            name,mid,body,ts=item
+            try:
+                await asyncio.to_thread(self.api.send,self.owner,
+                    f"🎬 @{name}\n\n{body[:3100]}\n\nhttps://t.me/{name}/{mid}",
+                    reply_markup={"inline_keyboard":[[
+                        {"text":"👍 Подходит","callback_data":f"webfb:yes:{name}:{mid}"},
+                        {"text":"👎 Не подходит","callback_data":f"webfb:no:{name}:{mid}"}]]})
+            except Exception as exc:
+                self.store.mark_delivery(name,mid,
+                    "blocked" if getattr(exc,"code",0)==403 else "retry")
+            else:
+                self.store.mark_delivery(name,mid,"sent")
 
-    def start(self):
-        self.thread.start()
+    async def run(self):
+        if self.store.consented():
+            try:
+                await self.start()
+            except Exception:
+                LOG.warning('Stored Web profile could not start; use /webqr to retry')
+        while True:
+            try:
+                if self.store.consented() and await self.verified():
+                    await self.scan()
+                elif self.started and not await self.verified():
+                    LOG.info("Web owner scan paused: identity not verified")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                LOG.warning("Owner Web scan paused: %s",type(exc).__name__)
+            await asyncio.sleep(60)
 
-    def link(self):
-        return self.origin + '/auth#' + self.tickets.issue()
-
-    def close(self):
-        self.tickets.revoke()
-        self.server.shutdown()
-        self.server.server_close()
+    async def disconnect(self):
+        async with self._lock, self._scan_lock:
+            if self.auth_portal:
+                self.auth_portal.tickets.revoke()
+            if self.reader._context:
+                await self.reader._context.close()
+                self.reader._context=None
+            if self.reader._pw:
+                await self.reader._pw.stop()
+                self.reader._pw=None
+            self.reader._page=None
+            self.started=False
+            self.store.forget()
+            profile=self.reader.profile_dir
+            if profile.name=="telegram-web-owner" and profile.is_dir():
+                shutil.rmtree(profile)
+        return ("Локальная сессия и личные данные удалены. "
+                "Завершите сеанс также в Telegram → Настройки → Устройства.")
