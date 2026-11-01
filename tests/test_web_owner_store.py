@@ -45,6 +45,26 @@ class WebOwnerIsolationTests(unittest.IsolatedAsyncioTestCase):
     async def test_only_three_approved_sources(self):
         with self.assertRaises(ValueError):
             self.owner.select_source("someothergroup")
+    async def test_reselect_retries_only_a_previous_lookup_miss(self):
+        now=int(time.time())
+        missing="Источник не найден среди первых 500 чатов Telegram Web"
+        self.owner.update_source("moscowfilms",error=missing,delay=3600,now=now)
+        self.assertEqual(self.owner.due(now),[])
+
+        self.owner.select_source("moscowfilms")
+
+        self.assertEqual(len(self.owner.due(now)),1)
+        self.assertIsNone(self.owner.sources()[0][5])
+
+    async def test_reselect_keeps_rate_limit_cooldown(self):
+        now=int(time.time())
+        self.owner.update_source("moscowfilms",error="FLOOD_WAIT_3600",
+                                 delay=3600,now=now)
+
+        self.owner.select_source("moscowfilms")
+
+        self.assertEqual(self.owner.due(now),[])
+        self.assertEqual(self.owner.sources()[0][5],"FLOOD_WAIT_3600")
     async def test_forget_preserves_other_bot_users(self):
         self.owner.forget()
         self.assertFalse(self.owner.consented())

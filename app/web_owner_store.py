@@ -80,6 +80,17 @@ class WebOwnerStore:
             self.db.connection.execute(
                 "INSERT OR IGNORE INTO web_owner_sources(user_id,username) VALUES(?,?)",
                 (self.owner_id,username))
+            # Joining a source and selecting it again is an explicit request to
+            # retry a previous lookup miss. Clear only that recoverable error;
+            # Telegram rate limits and other failures must keep their cooldown.
+            self.db.connection.execute(
+                """UPDATE web_owner_sources SET next_scan=0,last_error=NULL
+                   WHERE user_id=? AND username=?
+                     AND last_error IN (
+                       'Источник не найден среди первых 500 чатов Telegram Web',
+                       'Группа отсутствует среди доступных чатов аккаунта'
+                     )""",
+                (self.owner_id,username))
         return username
 
     def remove_source(self, raw: str) -> bool:
