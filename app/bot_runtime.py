@@ -13,6 +13,7 @@ from app.casting_quality import actionable
 from app.public_channels import normalize_channel, monitor_public
 from app.authorized_reader import run_authorized_reader
 from app.locale_ru import suggestion_status, readable_time, source_error
+from app.source_readiness import readiness_text, empty_castings_text
 
 log = logging.getLogger("casting.bot")
 HELP = (
@@ -27,7 +28,7 @@ HELP = (
     "/sources — выбранные каналы и подписки\n"
     "/castings — мои последние находки\n"
     "/pause и /resume — уведомления\n"
-    "/status — состояние\n/scan — проверить источники\n/suggest — предложить канал\n\n"
+    "/status — состояние\n/ready — доступность источников\n/scan — проверить источники\n/suggest — предложить канал\n\n"
     "Предложить новый канал можно через /suggest."
 )
 ADMIN_HELP = ("\n\nДля администратора: /admin, /addsource "
@@ -251,7 +252,9 @@ class Receiver:
             self.flush()
             rows=self.db.latest(user_id)
             lines=[f"🎬 {title}\n{body[:190]}\n{url or ''}" for title,body,url in rows]
-            self.api.send(user_id,"\n\n".join(lines)[:3800] if lines else "Пока нет подходящих кастингов.")
+            self.api.send(user_id,"\n\n".join(lines)[:3800] if lines else empty_castings_text(self.db))
+        elif cmd=="/ready":
+            self.api.send(user_id,readiness_text(self.db))
         elif cmd=="/status":
             states=self.db.public_status()
             checked=sum(1 for row in states if row[4])
@@ -266,6 +269,11 @@ class Receiver:
 
     def request_scan(self, user_id: int):
         self.db.register(user_id)
+        info=self.db.public_status()
+        if info and all(row[2] for row in info):
+            self.api.send(user_id,"Все публичные источники сейчас недоступны. "
+                "Повторный запрос не обойдёт ограничения Telegram. Подробности: /ready")
+            return
         count, retry_after = self.db.request_manual_scan()
         if count:
             self.api.send(user_id,
@@ -345,7 +353,7 @@ class Receiver:
             rows=self.db.latest(user_id)
             self.api.send(user_id,"\n\n".join(
                 "🎬 {}\n{}\n{}".format(title,body[:180],url or "") for title,body,url in rows)[:3700]
-                if rows else "Подходящих кастингов пока нет.")
+                if rows else empty_castings_text(self.db))
         elif data=="admin:sources":
             if user_id != self.owner_id:
                 return
