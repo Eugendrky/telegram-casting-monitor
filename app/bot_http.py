@@ -7,6 +7,9 @@ import urllib.error
 import urllib.request
 
 
+PNG_SIGNATURE=bytes.fromhex("89504e470d0a1a0a")
+
+
 class TelegramError(Exception):
     def __init__(self, code: int, description: str, retry_after: int = 0):
         self.code = code
@@ -59,7 +62,7 @@ class BotAPI:
 
         The login token stays out of logs, source control, and text messages.
         """
-        if not png or len(png)>1_000_000 or not png.startswith(b"\\x89PNG\\r\\n\\x1a\\n"):
+        if not png or len(png)>1_000_000 or not png.startswith(PNG_SIGNATURE):
             raise ValueError("Expected a small PNG image")
         boundary="CastingBot"+secrets.token_hex(12)
         prefix=(
