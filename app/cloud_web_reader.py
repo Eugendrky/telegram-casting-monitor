@@ -115,9 +115,11 @@ def select_peers(raw, approved: set[str]):
 
 class CloudWebReader:
     def __init__(self, db, receiver, *, profile_dir: str,
-                 interval_seconds: int=1800, lookback_hours: int=48):
+                 interval_seconds: int=1800, lookback_hours: int=48,\n                 owner_store=None, expected_owner: int=0):
         self.db=db
         self.receiver=receiver
+        self.owner_store=owner_store
+        self.expected_owner=expected_owner
         self.profile_dir=Path(profile_dir)
         self.interval=max(1800,int(interval_seconds))
         self.lookback_hours=max(1,min(lookback_hours,168))
@@ -184,6 +186,13 @@ class CloudWebReader:
             return None
 
     async def scan_once(self):
+        if self.owner_store is None or not self.expected_owner:
+            raise RuntimeError("Owner-scoped storage and verified identity required")
+        if not self.owner_store.consented():
+            raise RuntimeError("Owner consent required")
+        verified=await self.account_id()
+        if not same_account(verified,self.expected_owner):
+            raise RuntimeError("Telegram Web account does not match owner")
         if self._page is None:
             return
         async with self._lock:
@@ -197,13 +206,11 @@ class CloudWebReader:
             self.state="поиск источников"
             # At most 200 dialog summaries. No private message history requested.
             peers=select_peers(await self._page.evaluate(INDEX_JS,200),approved)
-            for sid,title,kind,enabled,joined,name in chosen:
-                if not self.db.should_scan_client(sid):
-                    continue
+            for name,cursor,_,_,_,_,_,_,_ in chosen:
                 if name not in peers:
-                    self.db.update_client_status(sid,
+                    self.owner_store.update_source(name,
                         error="Группа отсутствует среди доступных чатов аккаунта",
-                        retry_after=3600)
+                        delay=3600)
                     continue
                 now=int(time.time())
                 try:
@@ -212,20 +219,15 @@ class CloudWebReader:
                     )
                     recent=validate_posts(
                         messages,now=now,lookback_hours=self.lookback_hours,
-                        cursor=self.db.client_cursor(sid),
+                        cursor=cursor,
                     )
-                    previous=self.db.count_source_matches(sid)
+                    previous=sum(self.owner_store.stats().values())
                     for mid,ts,body in recent:
-                        self.receiver.handle_post({
-                            "chat":{"id":source_id(name),"title":"@"+name,
-                                    "type":"channel","username":name},
-                            "message_id":mid,"text":body,"date":ts,
-                        })
-                        self.db.advance_client_cursor(sid,mid)
-                    matched=max(0,self.db.count_source_matches(sid)-previous)
-                    self.db.client_scan_completed(
-                        sid,scanned=len(messages),new_posts=len(recent),
-                        matched=matched,interval=self.interval,
+                        self.owner_store.add_post(name,mid,body,ts)
+                    matched=max(0,sum(self.owner_store.stats().values())-previous)
+                    self.owner_store.update_source(
+                        name,cursor=max((mid for mid,_,_ in recent),default=cursor),
+                        visible=len(messages),new=len(recent),delay=self.interval
                     )
                     LOG.info("Cloud Telegram Web %s: visible=%s recent=%s matches=%s",
                              name,len(messages),len(recent),matched)
@@ -234,7 +236,7 @@ class CloudWebReader:
                         self.state="Telegram ограничил запросы. Сканирование остановлено"
                         self.db.update_client_status(sid,
                             error="Ограничение Telegram: сканирование остановлено",
-                            retry_after=86400)
+                            delay=86400)
                         LOG.error("Telegram Web rate limit; stopping reader")
                         raise RuntimeError("Telegram Web rate limited") from None
                     self.db.update_client_status(sid,
@@ -249,7 +251,7 @@ class CloudWebReader:
             await self.start()
             LOG.info("Telegram Web reader initialized; login required if not yet authorized")
             while True:
-                await self.scan_once()
+                if self.owner_store is not None and self.owner_store.consented():\n                    await self.scan_once()
                 await asyncio.sleep(30)
         except asyncio.CancelledError:
             raise
