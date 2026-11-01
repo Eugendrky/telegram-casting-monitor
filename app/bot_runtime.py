@@ -14,6 +14,7 @@ from app.public_channels import normalize_channel, monitor_public
 from app.authorized_reader import run_authorized_reader
 from app.locale_ru import suggestion_status, readable_time, source_error
 from app.source_readiness import readiness_text, empty_castings_text
+from app.quality_guardian import inspect as inspect_quality, render as render_quality, run_guardian
 
 log = logging.getLogger("casting.bot")
 HELP = (
@@ -273,6 +274,9 @@ class Receiver:
                 "\nБаза: подключена"+
                 "\nИсточники и QR: отдельно смотрите /ready"+
                 "\nТестовые объявления в базу не записывались.")
+        elif cmd=="/guardian":
+            if user_id==self.owner_id and self.owner_id>0:
+                self.api.send(user_id,render_quality(inspect_quality(self.db)))
         elif cmd=="/ready":
             self.api.send(user_id,readiness_text(self.db))
         elif cmd=="/status":
@@ -564,6 +568,11 @@ async def run():
                     db,receiver,api_id=int(api_id),api_hash=api_hash,session=session,
                     interval=int(os.getenv("CLIENT_SCAN_INTERVAL_SECONDS","1800")),
                     lookback_hours=int(os.getenv("PUBLIC_LOOKBACK_HOURS","48"))))
+        guardian_enabled=os.getenv('GUARDIAN_ENABLED','false').casefold() in ('true','1','yes')
+        guardian_task=asyncio.create_task(run_guardian(
+            db,api,owner,interval=int(os.getenv('GUARDIAN_INTERVAL_SECONDS','3600')),
+            alerts=os.getenv('GUARDIAN_ALERTS','false').casefold() in ('true','1','yes'))
+        ) if guardian_enabled else None
         public_task=None
         if not client_enabled:
             public_task=asyncio.create_task(monitor_public(
@@ -594,7 +603,8 @@ async def run():
                 await asyncio.sleep(10)
     finally:
         tasks=[task for task in (locals().get("public_task"),
-                                  locals().get("client_task")) if task is not None]
+                                  locals().get("client_task"),
+                                  locals().get("guardian_task")) if task is not None]
         for task in tasks:
             task.cancel()
         if tasks:
