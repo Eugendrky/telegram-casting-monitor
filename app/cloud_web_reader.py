@@ -96,7 +96,7 @@ def select_peers(raw, approved: set[str]):
         raise ValueError("Telegram Web не вернул список доступных групп")
     allow={normalize_channel(name) for name in approved}
     result={}
-    for item in raw[:400]:
+    for item in raw[:1000]:
         if not isinstance(item,dict):
             continue
         username=item.get("username")
@@ -257,12 +257,14 @@ class CloudWebReader:
             chosen=self.owner_store.due()
             approved={row[0] for row in chosen}
             self.state="поиск источников"
-            # At most 200 dialog summaries. No private message history requested.
-            peers=select_peers(await self._page.evaluate(INDEX_JS,200),approved)
+            # Search up to 500 dialog summaries per Telegram folder. Only the
+            # exact approved usernames are retained; message history is read
+            # only after an exact match.
+            peers=select_peers(await self._page.evaluate(INDEX_JS,500),approved)
             for name,cursor,_,_,_,_,_,_,_ in chosen:
                 if name not in peers:
                     self.owner_store.update_source(name,
-                        error="Группа отсутствует среди доступных чатов аккаунта",
+                        error="Источник не найден среди первых 500 чатов Telegram Web",
                         delay=3600)
                     continue
                 now=int(time.time())

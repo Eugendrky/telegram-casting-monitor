@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, Mock
 
-from app.cloud_web_reader import CloudWebReader
+from app.cloud_web_reader import CloudWebReader, INDEX_JS, select_peers
 from app.web_auth_portal import AuthPortal
 
 
@@ -39,6 +39,21 @@ class AuthBrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await reader.status(), 'Ожидает входа по QR')
         await self.page.set_content('<input type="password">')
         self.assertEqual(await reader.status(), 'Требуется облачный пароль')
+
+    async def test_exact_source_lookup_reaches_dialogs_past_200(self):
+        await self.page.set_content('<main></main>')
+        await self.page.evaluate("""() => {
+          const dialogs = Array.from({length: 225}, (_, i) => ({peerId: -(i + 1)}));
+          window.appImManager = {managers: {
+            dialogsStorage: {getDialogs: async ({filterId, limit}) => ({
+              dialogs: filterId === 0 ? dialogs.slice(0, limit) : []
+            })},
+            appChatsManager: {getChat: async id =>
+              id === 221 ? {username: 'moscowfilms'} : {}}
+          }};
+        }""")
+        raw = await self.page.evaluate(INDEX_JS, 500)
+        self.assertEqual(select_peers(raw, {'moscowfilms'}), {'moscowfilms': '-221'})
 
     async def test_password_submit_and_redacted_rejection_on_official_origin(self):
         fixture = '''<input type="password" disabled><input type="password" aria-hidden="true"><input id="active" type="password"><script>
