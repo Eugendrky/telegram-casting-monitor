@@ -253,6 +253,26 @@ class Receiver:
             rows=self.db.latest(user_id)
             lines=[f"🎬 {title}\n{body[:190]}\n{url or ''}" for title,body,url in rows]
             self.api.send(user_id,"\n\n".join(lines)[:3800] if lines else empty_castings_text(self.db))
+        elif cmd=="/selftest":
+            if user_id!=self.owner_id or self.owner_id<=0:
+                return
+            from app.casting_quality import actionable
+            from app.matcher import match_post
+            from app.config import Profile
+            example="Кастинг в Москве. Ищем актрису 25-35 лет для съёмок рекламы."
+            profile=Profile(city="Москва",gender="female",age=30,
+                            height_cm=170,kids_ok=False,
+                            include_keywords=[],exclude_keywords=[])
+            eligible,reason=actionable(example)
+            result=match_post(example,profile)
+            state="✅ Успешно" if eligible and result.matched else "❌ Ошибка фильтра"
+            self.api.send(user_id,"🧪 Самопроверка\n"+
+                state+"\nДоставка ответа: успешно (это сообщение)"+
+                "\nФильтрация: "+reason+
+                "\nПроверка профиля: "+("совпадение" if result.matched else "не совпало")+
+                "\nБаза: подключена"+
+                "\nИсточники и QR: отдельно смотрите /ready"+
+                "\nТестовые объявления в базу не записывались.")
         elif cmd=="/ready":
             self.api.send(user_id,readiness_text(self.db))
         elif cmd=="/status":
