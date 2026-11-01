@@ -131,9 +131,14 @@ class PersonalReader:
         session=self.store.session(uid)
         if session:
             try:
-                async with TelegramClient(StringSession(self.vault.open(session)),
-                                          self.api_id,self.api_hash) as client:
-                    await client.log_out()
+                client=TelegramClient(StringSession(self.vault.open(session)),
+                                      self.api_id,self.api_hash)
+                try:
+                    await client.connect()
+                    if await client.is_user_authorized():
+                        await client.log_out()
+                finally:
+                    await client.disconnect()
             except Exception as exc:
                 LOG.warning("Session revoke failed: %s",type(exc).__name__)
                 return ("Не удалось отозвать Telegram-сессию автоматически. "
