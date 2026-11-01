@@ -274,6 +274,14 @@ class Receiver:
                 "\nБаза: подключена"+
                 "\nИсточники и QR: отдельно смотрите /ready"+
                 "\nТестовые объявления в базу не записывались.")
+        elif cmd=="/delete_me":
+            self.api.send(user_id,
+                "Удалить вашу анкету, подписки, оценки и историю доставок? "
+                "Публикации других пользователей останутся в общей базе.",
+                reply_markup={"inline_keyboard":[[
+                    {"text":"Да, удалить мои данные","callback_data":"privacy:confirm"},
+                    {"text":"Отмена","callback_data":"privacy:cancel"}
+                ]]})
         elif cmd=="/guardian":
             if user_id==self.owner_id and self.owner_id>0:
                 self.api.send(user_id,render_quality(inspect_quality(self.db)))
@@ -341,7 +349,13 @@ class Receiver:
         if callback_id:
             try: self.api.call("answerCallbackQuery",callback_query_id=callback_id)
             except TelegramError: pass
-        if data=="scan:now":
+        if data=="privacy:confirm":
+            self.db.delete_user_data(user_id)
+            self.api.send(user_id,"Ваш профиль, подписки и история уведомлений удалены. "
+                                 "Команда /start создаст новую анкету.")
+        elif data=="privacy:cancel":
+            self.api.send(user_id,"Удаление отменено.")
+        elif data=="scan:now":
             self.request_scan(user_id)
         elif data=="suggest:start":
             self.db.set_waiting_for_suggestion(user_id,True)
