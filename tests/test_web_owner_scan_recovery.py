@@ -40,9 +40,10 @@ class WebOwnerScanRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 reader._page = page
                 await reader.scan_once()
                 rows = {row[0]: row for row in store.sources()}
-                self.assertEqual(rows["moscowfilms"][5], "Не удалось прочитать сообщения из группы")
-                self.assertEqual(rows["kinocekh"][5], None)
-                self.assertEqual(rows["kinocekh"][7], 1)
+                # sources() returns alphabetical order: kinocekh first.
+                self.assertEqual(rows["kinocekh"][5], "Не удалось прочитать сообщения из группы")
+                self.assertEqual(rows["moscowfilms"][5], None)
+                self.assertEqual(rows["moscowfilms"][7], 1)
             finally:
                 db.close()
 
