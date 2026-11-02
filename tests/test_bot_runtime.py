@@ -6,7 +6,7 @@ from app.bot_runtime import Receiver, link_for, parse_setting
 
 class FakeAPI:
     def __init__(self): self.messages=[]
-    def send(self, chat_id, text, reply_markup=None): self.messages.append((chat_id,text))
+    def send(self, chat_id, text, reply_markup=None): self.messages.append((chat_id,text,reply_markup))
 
 class ReceiverTests(unittest.TestCase):
     def setUp(self):
@@ -58,3 +58,13 @@ class ReceiverTests(unittest.TestCase):
 
     def test_channel_permalink(self):
         self.assertEqual(link_for({"id":-100123,"username":"casts"},7),"https://t.me/casts/7")
+
+    def test_start_installs_persistent_menu_button(self):
+        self.bot.handle_private({"from":{"id":101},"text":"/start"})
+        markup=self.api.messages[-2][2]
+        self.assertEqual(markup["keyboard"],[[{"text":"📋 Меню"}]])
+        self.assertTrue(markup["is_persistent"])
+
+    def test_menu_button_reopens_inline_menu(self):
+        self.bot.handle_private({"from":{"id":101},"text":"📋 Меню"})
+        self.assertIn("inline_keyboard",self.api.messages[-1][2])

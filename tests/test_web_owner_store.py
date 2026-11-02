@@ -42,9 +42,17 @@ class WebOwnerIsolationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError,"does not match"):
             await reader.scan_once()
         reader._page.evaluate.assert_not_called()
-    async def test_only_three_approved_sources(self):
+    async def test_user_can_add_and_remove_public_group(self):
+        self.assertEqual(self.owner.select_source("@someothergroup"),"someothergroup")
+        self.assertEqual({row[0] for row in self.owner.sources()},
+                         {"moscowfilms","someothergroup"})
+        self.assertTrue(self.owner.remove_source("https://t.me/someothergroup"))
+        self.assertFalse(self.owner.remove_source("someothergroup"))
+        self.assertEqual([row[0] for row in self.owner.sources()], ["moscowfilms"])
+
+    async def test_private_invite_is_not_a_valid_source(self):
         with self.assertRaises(ValueError):
-            self.owner.select_source("someothergroup")
+            self.owner.select_source("https://t.me/+privateInvite")
     async def test_reselect_retries_only_a_previous_lookup_miss(self):
         now=int(time.time())
         missing="Источник не найден среди первых 500 чатов Telegram Web"

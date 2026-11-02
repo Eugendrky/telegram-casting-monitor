@@ -34,7 +34,8 @@ HELP = (
     "/pause и /resume — уведомления\n"
     "/status — состояние\n/ready — доступность источников\n/scan — проверить источники\n/suggest — предложить канал\n\n"
     "/webconnect — подключить Telegram Web (по допуску администратора)\n"
-    "/websource @канал — выбрать источник\n"
+    "/websource @username — добавить публичную группу/канал\n"
+    "/webremove @username — убрать источник\n"
     "/websources и /webscan — источники и проверка\n"
     "/webstatus и /webdisconnect — состояние и отключение\n"
     "Предложить новый канал можно через /suggest."
@@ -111,6 +112,11 @@ def menu():
          {"text":"🎬 Кастинги","callback_data":"menu:castings"}]
     ]}
 
+def menu_reply_keyboard():
+    return {"keyboard":[[{"text":"📋 Меню"}]],
+            "resize_keyboard":True,"is_persistent":True,
+            "input_field_placeholder":"Нажмите «Меню» для команд"}
+
 class Receiver:
     def __init__(self, api: BotAPI, db: Database, owner_id: int):
         self.api,self.db,self.owner_id=api,db,owner_id
@@ -134,6 +140,9 @@ class Receiver:
         user_id=message.get("from",{}).get("id")
         if not isinstance(user_id,int): return
         text=(message.get("text") or "").strip()
+        if text.casefold() in ("📋 меню", "меню"):
+            self.api.send(user_id,HELP + (ADMIN_HELP if user_id==self.owner_id and self.owner_id>0 else ""),reply_markup=menu())
+            return
         if not text.startswith("/"):
             prompt=self.db.profile_prompt(user_id)
             if prompt:
@@ -190,8 +199,11 @@ class Receiver:
                 intro += ADMIN_HELP
             elif self.owner_id <= 0:
                 intro += f"\n\nВаш идентификатор в Telegram: {user_id}. Укажите его в настройке BOT_OWNER_ID."
+            self.api.send(user_id,"Быстрый доступ к меню:",reply_markup=menu_reply_keyboard())
             self.api.send(user_id,intro,reply_markup=menu())
-        elif cmd=="/help": self.api.send(user_id,HELP + (ADMIN_HELP if user_id==self.owner_id and self.owner_id>0 else ""),reply_markup=menu())
+        elif cmd=="/help":
+            self.api.send(user_id,"Кнопка меню закреплена внизу чата.",reply_markup=menu_reply_keyboard())
+            self.api.send(user_id,HELP + (ADMIN_HELP if user_id==self.owner_id and self.owner_id>0 else ""),reply_markup=menu())
         elif cmd=="/suggest":
             if arg: self.submit_suggestion(user_id,arg)
             else:
@@ -677,7 +689,7 @@ async def run():
                                 api.send(sender,"Разрешённые пользователи:\n"+"\n".join(
                                     f"@{name}"+(f" · ID {uid}" if uid else " · ещё не подключался")
                                     for name,uid,added in rows) if rows else "Список доступа пуст.")
-                        allowed={"/webconnect","/webqr","/webauth","/webstatus","/websource","/websources","/webscan","/webcastings","/webdisconnect"}
+                        allowed={"/webconnect","/webqr","/webauth","/webstatus","/websource","/webremove","/websources","/webscan","/webcastings","/webdisconnect"}
                         if chat.get("type")=="private" and cmd in allowed:
                             handled=True
                             if web_users is None:
@@ -719,9 +731,20 @@ async def run():
                                             api.send(sender,await pilot.auth_link())
                                         elif cmd=="/websource":
                                             name=pilot.store.select_source((msg.get("text") or "").partition(" ")[2])
-                                            api.send(sender,"Источник выбран: @"+name)
+                                            api.send(sender,"✅ Источник добавлен: @"+name+
+                                                ". Он должен быть доступен в чатах вашего Telegram-аккаунта; проверка выполняется автоматически.")
+                                        elif cmd=="/webremove":
+                                            raw=(msg.get("text") or "").partition(" ")[2]
+                                            removed=pilot.store.remove_source(raw)
+                                            name=normalize_channel(raw)
+                                            api.send(sender,("✅ Источник удалён: @"+name) if removed else
+                                                     ("Источник @"+name+" не был добавлен."))
                                         elif cmd=="/websources":
-                                            api.send(sender,"Источники: "+", ".join("@"+r[0] for r in pilot.store.sources()))
+                                            rows=pilot.store.sources()
+                                            api.send(sender,"Источники Telegram Web:\n"+"\n".join(
+                                                "@{} — {}".format(r[0],r[5] or ("проверено, новых {}".format(r[7]) if r[4] else "ожидает проверки"))
+                                                for r in rows) if rows else
+                                                "Список пуст. Добавьте группу: /websource @username")
                                         elif cmd=="/webscan":
                                             api.send(sender,await pilot.scan())
                                         elif cmd=="/webcastings":

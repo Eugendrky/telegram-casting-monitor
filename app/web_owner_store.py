@@ -69,13 +69,8 @@ class WebOwnerStore:
 
     def select_source(self, raw: str) -> str:
         username = normalize_channel(raw)
-        if username not in PILOT_SOURCES:
-            raise ValueError("Источник пока не включён в разрешённые три группы")
         if not self.consented():
-            raise ValueError("Сначала подтвердите подключение через /connect")
-        if not any(row[5] == username and row[3] and row[4]
-                   for row in self.db.public_sources()):
-            raise ValueError("Источник не одобрен администратором")
+            raise ValueError("Сначала подтвердите подключение через /webconnect")
         with self.db._lock, self.db.connection:
             self.db.connection.execute(
                 "INSERT OR IGNORE INTO web_owner_sources(user_id,username) VALUES(?,?)",
