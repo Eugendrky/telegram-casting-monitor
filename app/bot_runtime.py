@@ -15,6 +15,7 @@ from app.authorized_reader import run_authorized_reader
 from app.locale_ru import suggestion_status, readable_time, source_error
 from app.source_readiness import readiness_text, empty_castings_text
 from app.owner_web_pilot import OwnerWebPilot
+from app.web_owner_store import PILOT_SOURCES
 from app.quality_guardian import inspect as inspect_quality, render as render_quality, run_guardian
 
 log = logging.getLogger("casting.bot")
@@ -107,6 +108,7 @@ def menu():
 class Receiver:
     def __init__(self, api: BotAPI, db: Database, owner_id: int):
         self.api,self.db,self.owner_id=api,db,owner_id
+        self.web_pilot=None
 
     def source_list(self,user_id: int):
         lines=[]
@@ -325,7 +327,25 @@ class Receiver:
         try:
             channel=normalize_channel(raw)
             if any(row[5]==channel for row in self.db.sources()):
-                self.api.send(user_id,"Этот канал уже включён в каталог.")
+                message="Этот канал уже включён в каталог. Каталог означает, что источник разрешён, " \
+                        "но сам по себе не подтверждает доступ аккаунта сборщика к публикациям."
+                if user_id==self.owner_id and self.web_pilot is not None and channel in PILOT_SOURCES:
+                    state=next((row for row in self.web_pilot.store.sources()
+                                if row[0]==channel),None)
+                    if state is None:
+                        message += (f"\n@{channel} ещё не выбран в Telegram Web. "
+                                    f"После подтверждения доступа выберите его: /websource @{channel}, "
+                                    "затем запустите /webscan.")
+                    elif state[5]:
+                        message += (f"\nПоследняя проверка не получила доступ к @{channel}: {state[5]}. "
+                                    "Если заявка на вступление ещё рассматривается, дождитесь одобрения; "
+                                    f"затем повторите /websource @{channel} и запустите /webscan.")
+                    elif state[4]:
+                        message += f"\nДоступ к @{channel} уже проверен; последняя проверка прошла успешно."
+                    else:
+                        message += (f"\n@{channel} выбран, но успешная проверка доступа ещё не завершилась. "
+                                    "Проверьте /webstatus.")
+                self.api.send(user_id,message)
                 return
             suggestion_id,status=self.db.propose(user_id,channel)
         except ValueError as exc:
@@ -594,6 +614,7 @@ async def run():
         web_task=None
         if os.getenv("WEB_QR_PILOT_ENABLED","false").lower() in ("1","true","yes") and owner>0:
             web_pilot=OwnerWebPilot(db,api,owner)
+            receiver.web_pilot=web_pilot
             auth_base=os.getenv('WEB_AUTH_BASE_URL','').strip()
             if auth_base:
                 from app.web_auth_portal import AuthPortal
