@@ -1,7 +1,7 @@
-"""Isolated owner-only casting inbox for Telegram Web imports.
+"""Isolated per-user casting inbox for Telegram Web imports.
 
 No Telegram credentials or browser data are kept in this database.
-Only approved source publications reach the owner's delivery queue.
+Only approved source publications reach each user's delivery queue.
 """
 from __future__ import annotations
 

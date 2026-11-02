@@ -1,4 +1,4 @@
-"""Owner-only Web K connection, guarded scanning and private delivery."""
+"""Per-user Web K connection, guarded scanning and private delivery."""
 from __future__ import annotations
 import asyncio
 import logging
@@ -12,8 +12,12 @@ LOG=logging.getLogger("casting.webpilot")
 
 class OwnerWebPilot:
     def __init__(self,db,api,owner_id:int,*,profile_dir="/data/telegram-web-owner"):
-        if owner_id<=0 or Path(profile_dir).name!="telegram-web-owner":
-            raise ValueError("Owner and isolated browser path required")
+        profile=Path(profile_dir)
+        allowed_owner_path=profile.name=="telegram-web-owner"
+        allowed_user_path=(profile.parent.name=="telegram-web-users"
+                           and profile.name==str(owner_id))
+        if owner_id<=0 or not (allowed_owner_path or allowed_user_path):
+            raise ValueError("User and isolated browser path required")
         self.owner=owner_id
         self.db=db
         self.api=api
@@ -46,7 +50,7 @@ class OwnerWebPilot:
         if not self.started:
             return "Браузер выключен"
         if await self.verified():
-            return "Telegram Web: владелец подтверждён. /webscan"
+            return "Telegram Web: ваш аккаунт подтверждён. /webscan"
         state=await self.reader.status()
         return ("Telegram Web: "+state+". Сканирование заблокировано."+
                 (" Откройте /webauth для двухэтапного пароля." if state=="Требуется облачный пароль" else ""))
@@ -71,8 +75,8 @@ class OwnerWebPilot:
                 state = await self.reader.status()
                 if state == 'Требуется облачный пароль':
                     raise ValueError('Telegram оставил запрос облачного пароля. Проверьте, что он отправлен, и запросите новую ссылку.')
-                raise ValueError('Telegram не подтвердил аккаунт владельца. Сканирование осталось заблокировано.')
-            return 'Вход завершён, владелец подтверждён. Вернитесь в бота: /webstatus.'
+                raise ValueError('Telegram не подтвердил аккаунт пользователя. Сканирование осталось заблокировано.')
+            return 'Вход завершён, ваш аккаунт подтверждён. Вернитесь в бота: /webstatus.'
 
     async def auth_link(self):
         if self.auth_portal is None:
@@ -172,17 +176,24 @@ class OwnerWebPilot:
         async with self._lock, self._scan_lock:
             if self.auth_portal:
                 self.auth_portal.tickets.revoke()
-            if self.reader._context:
-                await self.reader._context.close()
-                self.reader._context=None
-            if self.reader._pw:
-                await self.reader._pw.stop()
-                self.reader._pw=None
-            self.reader._page=None
+            context,pw=self.reader._context,self.reader._pw
+            self.reader._context=self.reader._pw=self.reader._page=None
             self.started=False
+            if context:
+                try:
+                    await context.close()
+                except Exception:
+                    LOG.warning("Telegram Web context closed with an error; deleting its local profile")
+            if pw:
+                try:
+                    await pw.stop()
+                except Exception:
+                    LOG.warning("Telegram Web browser stopped with an error")
             self.store.forget()
             profile=self.reader.profile_dir
-            if profile.name=="telegram-web-owner" and profile.is_dir():
-                shutil.rmtree(profile)
+            if (profile.name=="telegram-web-owner"
+                    or (profile.parent.name=="telegram-web-users"
+                        and profile.name==str(self.owner))) and profile.is_dir():
+                shutil.rmtree(profile,ignore_errors=True)
         return ("Локальная сессия и личные данные удалены. "
                 "Завершите сеанс также в Telegram → Настройки → Устройства.")

@@ -1,6 +1,6 @@
-"""Opt-in single-instance Telegram Web reader for explicitly approved sources.
+"""Opt-in per-user Telegram Web reader for explicitly approved sources.
 
-Uses the owner's authenticated Telegram Web session in a Playwright Chromium
+Uses an authenticated Telegram Web session in an isolated Playwright Chromium
 profile on the Railway volume. No custom Telegram API keys, no bulk discovery,
 no automatic joining groups, no exporting browser session to any service.
 
@@ -132,6 +132,9 @@ class CloudWebReader:
 
     async def start(self):
         from playwright.async_api import async_playwright
+        if self.profile_dir.parent.name == "telegram-web-users":
+            self.profile_dir.parent.mkdir(parents=True, exist_ok=True)
+            self.profile_dir.parent.chmod(0o700)
         self.profile_dir.mkdir(parents=True,exist_ok=True)
         self.profile_dir.chmod(0o700)
         self._pw=await async_playwright().start()
@@ -185,7 +188,7 @@ class CloudWebReader:
                 return None
 
     async def qr_image(self) -> bytes | None:
-        """An ephemeral auth QR, to be sent solely to the configured owner chat."""
+        """An ephemeral auth QR, to be sent solely to the authenticated user's chat."""
         if self._page is None:
             return None
         async with self._lock:
@@ -240,12 +243,12 @@ class CloudWebReader:
                     pass
     async def scan_once(self):
         if self.owner_store is None or not self.expected_owner:
-            raise RuntimeError("Owner-scoped storage and verified identity required")
+            raise RuntimeError("User-scoped storage and verified identity required")
         if not self.owner_store.consented():
-            raise RuntimeError("Owner consent required")
+            raise RuntimeError("User consent required")
         verified=await self.account_id()
         if not same_account(verified,self.expected_owner):
-            raise RuntimeError("Telegram Web account does not match owner")
+            raise RuntimeError("Telegram Web account does not match authenticated user")
         if self._page is None:
             return
         async with self._lock:

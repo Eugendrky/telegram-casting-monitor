@@ -43,6 +43,16 @@ class TicketTests(unittest.TestCase):
                 trusted_origin(url)
         self.assertEqual(trusted_origin('https://bot.test/'), 'https://bot.test')
 
+    def test_ticket_revocation_is_scoped_to_one_user(self):
+        tickets = LoginTickets()
+        first = tickets.issue(101)
+        second = tickets.issue(202)
+        self.assertEqual(tickets.user_id(first), 101)
+        self.assertEqual(tickets.user_id(second), 202)
+        tickets.revoke(101)
+        self.assertFalse(tickets.valid(first))
+        self.assertTrue(tickets.valid(second))
+
 
 class PortalTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):

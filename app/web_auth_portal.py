@@ -95,8 +95,8 @@ h1{font-size:24px}p{line-height:1.5}img{width:min(80vw,300px);height:auto;margin
 SAFE_AUTH_ERRORS = {
     'Telegram оставил запрос облачного пароля. Проверьте, что он отправлен, и запросите новую ссылку.':
         'Telegram оставил экран облачного пароля. Вход не подтверждён. Получите новую ссылку командой /webauth.',
-    'Telegram не подтвердил аккаунт владельца. Сканирование осталось заблокировано.':
-        'Telegram завершил шаг пароля, но аккаунт владельца не подтверждён. Сканирование осталось заблокировано; проверьте /webstatus.',
+    'Telegram не подтвердил аккаунт пользователя. Сканирование осталось заблокировано.':
+        'Telegram не подтвердил аккаунт пользователя. Сканирование осталось заблокировано; проверьте /webstatus.',
     'Telegram отклонил облачный пароль или оставил запрос активным':
         'Telegram оставил экран облачного пароля. Вход не подтверждён. Проверьте /webstatus и запросите новую ссылку командой /webauth.',
     'Official Telegram Web required':
@@ -107,8 +107,8 @@ SAFE_AUTH_ERRORS = {
         'Telegram Web показывает несколько полей пароля. Ссылка отозвана, сканирование остаётся заблокировано; проверьте /webstatus.',
     'Telegram login not completed':
         'Telegram Web не подтвердил завершение входа. Проверьте /webstatus и запросите новую ссылку.',
-    'Owner identity not confirmed':
-        'Telegram не подтвердил аккаунт владельца. Сканирование осталось заблокировано; проверьте /webstatus.',
+    'Telegram Web account does not match authenticated user':
+        'Telegram ID аккаунта не совпал с вашим ID в боте. Вход и сбор остаются заблокированы.',
 }
 
 PAGE = ("""<!doctype html><html lang="ru"><meta charset="utf-8">
@@ -132,39 +132,67 @@ p{line-height:1.5}label{display:block}#message{min-height:48px}
 
 
 class LoginTickets:
-    """Only a digest is retained in memory; restart/revoke invalidates all links."""
+    """Per-user one-time tickets retain only digests; restart invalidates all links."""
     def __init__(self, clock=time.monotonic):
         self.clock = clock
         self.lock = threading.Lock()
-        self.digest = None
-        self.deadline = 0
-        self.issued = []
+        self.tokens = {}
+        self.by_user = {}
+        self.issued = {}
 
-    def issue(self):
+    def issue(self, user_id=0):
+        if not isinstance(user_id, int) or isinstance(user_id, bool) or user_id < 0:
+            raise ValueError("Invalid ticket owner")
         with self.lock:
             now = self.clock()
-            self.issued = [stamp for stamp in self.issued if now - stamp < 600]
-            if len(self.issued) >= 5:
+            issued = [stamp for stamp in self.issued.get(user_id, []) if now - stamp < 600]
+            if len(issued) >= 5:
                 raise ValueError("Слишком много попыток. Подождите 10 минут.")
             token = secrets.token_urlsafe(32)
-            self.digest = hashlib.sha256(token.encode()).digest()
-            self.deadline = now + 300
-            self.issued.append(now)
+            digest = hashlib.sha256(token.encode()).digest()
+            previous = self.by_user.get(user_id)
+            if previous is not None:
+                self.tokens.pop(previous, None)
+            self.tokens[digest] = (user_id, now + 300)
+            self.by_user[user_id] = digest
+            issued.append(now)
+            self.issued[user_id] = issued
             return token
 
     def valid(self, token, *, consume=False):
         with self.lock:
             if not isinstance(token, str) or not 40 <= len(token) <= 100:
                 return False
-            good = (self.digest is not None and self.clock() < self.deadline
-                    and hmac.compare_digest(self.digest, hashlib.sha256(token.encode()).digest()))
+            digest = hashlib.sha256(token.encode()).digest()
+            match = next((key for key in self.tokens if hmac.compare_digest(key, digest)), None)
+            ticket = self.tokens.get(match) if match is not None else None
+            good = ticket is not None and self.clock() < ticket[1]
             if good and consume:
-                self.digest = None
+                user_id, _ = self.tokens.pop(match)
+                if self.by_user.get(user_id) == match:
+                    self.by_user.pop(user_id, None)
             return good
 
-    def revoke(self):
+    def user_id(self, token):
         with self.lock:
-            self.digest = None
+            if not isinstance(token, str) or not 40 <= len(token) <= 100:
+                return None
+            digest = hashlib.sha256(token.encode()).digest()
+            match = next((key for key in self.tokens if hmac.compare_digest(key, digest)), None)
+            ticket = self.tokens.get(match) if match is not None else None
+            if ticket is None or self.clock() >= ticket[1]:
+                return None
+            return ticket[0]
+
+    def revoke(self, user_id=None):
+        with self.lock:
+            if user_id is None:
+                self.tokens.clear()
+                self.by_user.clear()
+                return
+            digest = self.by_user.pop(user_id, None)
+            if digest is not None:
+                self.tokens.pop(digest, None)
 
 
 def trusted_origin(base_url):
@@ -264,6 +292,11 @@ class AuthPortal:
                 if not portal.tickets.valid(token):
                     self.reply(403, {'message': 'Ссылка недействительна или истекла.'})
                     return
+                user_id = portal.tickets.user_id(token)
+                pilot = portal.pilot_for(user_id)
+                if pilot is None:
+                    self.reply(403, {'message': 'Ссылка недействительна или истекла.'})
+                    return
                 try:
                     length = int(self.headers.get('Content-Length', '0'))
                     if (not 0 < length <= 8192 or self.headers.get('Transfer-Encoding')
@@ -273,7 +306,7 @@ class AuthPortal:
                     if not isinstance(body, dict):
                         raise ValueError()
                     if self.path == '/auth/qr-image':
-                        work = portal.pilot.qr_snapshot()
+                        work = pilot.qr_snapshot()
                     elif self.path == '/auth/password':
                         password = body.get('password')
                         if not isinstance(password, str) or not 1 <= len(password) <= 1024:
@@ -281,10 +314,10 @@ class AuthPortal:
                         if not portal.tickets.valid(token, consume=True):
                             self.reply(403, {'message': 'Ссылка уже использована.'})
                             return
-                        work = portal.pilot.submit_password(password)
+                        work = pilot.submit_password(password)
                         del password
                     else:
-                        work = portal.pilot.password_ready()
+                        work = pilot.password_ready()
                     future = asyncio.run_coroutine_threadsafe(work, portal.loop)
                     try:
                         result = future.result(timeout=35)
@@ -300,7 +333,7 @@ class AuthPortal:
                             self.reply(200, value, 'image/png')
                         else:
                             if state == 'authorized':
-                                portal.tickets.revoke()
+                                portal.tickets.revoke(user_id)
                             self.reply(200, {'state': state, 'message': value})
                     else:
                         self.reply(200, {'message': result})
@@ -315,13 +348,49 @@ class AuthPortal:
     def start(self):
         self.thread.start()
 
-    def link(self):
-        return self.origin + '/auth#' + self.tickets.issue()
+    def pilot_for(self, user_id):
+        if user_id is None:
+            return None
+        if isinstance(getattr(self.pilot, "pilots", None), dict):
+            if not self.pilot.is_id_allowed(user_id):
+                return None
+            return self.pilot.get(user_id, create=False)
+        expected = getattr(self.pilot, "owner", None)
+        if user_id == 0 or expected == user_id:
+            return self.pilot
+        return None
 
-    def qr_link(self):
-        return self.origin + '/qr#' + self.tickets.issue()
+    def link(self, user_id=None):
+        if user_id is None:
+            user_id = getattr(self.pilot, "owner", 0)
+        return self.origin + '/auth#' + self.tickets.issue(user_id)
+
+    def qr_link(self, user_id=None):
+        if user_id is None:
+            user_id = getattr(self.pilot, "owner", 0)
+        return self.origin + '/qr#' + self.tickets.issue(user_id)
 
     def close(self):
         self.tickets.revoke()
         self.server.shutdown()
         self.server.server_close()
+
+    def for_user(self, user_id: int):
+        """Return a facade whose links can only mint tickets for one user."""
+        portal = self
+
+        class UserPortal:
+            class UserTickets:
+                @staticmethod
+                def revoke():
+                    portal.tickets.revoke(user_id)
+
+            tickets = UserTickets()
+
+            def link(self):
+                return portal.link(user_id)
+
+            def qr_link(self):
+                return portal.qr_link(user_id)
+
+        return UserPortal()

@@ -15,6 +15,7 @@ from app.authorized_reader import run_authorized_reader
 from app.locale_ru import suggestion_status, readable_time, source_error
 from app.source_readiness import readiness_text, empty_castings_text
 from app.owner_web_pilot import OwnerWebPilot
+from app.web_user_manager import WebUserManager
 from app.web_owner_store import PILOT_SOURCES
 from app.quality_guardian import inspect as inspect_quality, render as render_quality, run_guardian
 
@@ -32,12 +33,17 @@ HELP = (
     "/castings — мои последние находки\n"
     "/pause и /resume — уведомления\n"
     "/status — состояние\n/ready — доступность источников\n/scan — проверить источники\n/suggest — предложить канал\n\n"
+    "/webconnect — подключить Telegram Web (по допуску администратора)\n"
+    "/websource @канал — выбрать источник\n"
+    "/websources и /webscan — источники и проверка\n"
+    "/webstatus и /webdisconnect — состояние и отключение\n"
     "Предложить новый канал можно через /suggest."
 )
 ADMIN_HELP = ("\n\nДля администратора: /admin, /addsource "
               "(со ссылкой на канал), /publicstatus.\n"
-              "Подключение Telegram Web: /webconnect → /webqr → /webstatus.\n"
-              "Если запрошен облачный пароль: /webauth. Пароль в чат не отправлять.")
+              "Доступ к Telegram Web: /weballow @username, /webdeny @username, /weballowed.\n"
+              "QR-авторизация Telegram Web: /webconnect → /webqr → /webstatus.\n"
+              "Облачный пароль вводится только по одноразовой ссылке /webauth.")
 
 def link_for(chat: dict, message_id: int) -> str | None:
     username = chat.get("username")
@@ -610,19 +616,21 @@ async def run():
             db,api,owner,interval=int(os.getenv('GUARDIAN_INTERVAL_SECONDS','3600')),
             alerts=os.getenv('GUARDIAN_ALERTS','false').casefold() in ('true','1','yes'))
         ) if guardian_enabled else None
-        web_pilot=None
-        web_task=None
+        web_users=None
+        web_portal=None
+        web_restore_task=None
         if os.getenv("WEB_QR_PILOT_ENABLED","false").lower() in ("1","true","yes") and owner>0:
-            web_pilot=OwnerWebPilot(db,api,owner)
-            receiver.web_pilot=web_pilot
+            web_users=WebUserManager(db,api,owner)
             auth_base=os.getenv('WEB_AUTH_BASE_URL','').strip()
             if auth_base:
                 from app.web_auth_portal import AuthPortal
-                web_pilot.auth_portal=AuthPortal(web_pilot,auth_base,
+                web_portal=AuthPortal(web_users,auth_base,
                     asyncio.get_running_loop(),port=int(os.getenv('PORT','8080')))
-                web_pilot.auth_portal.start()
-            web_task=asyncio.create_task(web_pilot.run())
-            log.info("Owner-only Telegram Web QR pilot enabled; no automatic login")
+                web_portal.start()
+                web_users.auth_portal=web_portal
+            receiver.web_pilot=web_users.get(owner)
+            web_restore_task=asyncio.create_task(web_users.restore())
+            log.info("Consent-gated per-user Telegram Web collection enabled")
         public_task=None
         if not client_enabled:
             public_task=asyncio.create_task(monitor_public(
@@ -636,65 +644,118 @@ async def run():
                         handled=False
                         msg=update.get("message") or {}
                         sender=(msg.get("from") or {}).get("id")
+                        sender_username=(msg.get("from") or {}).get("username")
                         chat=msg.get("chat") or {}
                         cmd=(msg.get("text") or "").strip().split(" ",1)[0].split("@")[0].lower()
+                        admin_web_commands={"/weballow","/webdeny","/weballowed"}
+                        if chat.get("type")=="private" and cmd in admin_web_commands:
+                            handled=True
+                            if sender!=owner or owner<=0:
+                                api.send(sender,"Управлять списком доступа может только администратор.")
+                            elif web_users is None:
+                                api.send(sender,"Подключение Telegram Web пока выключено на сервере.")
+                            elif cmd=="/weballow":
+                                try:
+                                    username=web_users.allow((msg.get("text") or "").partition(" ")[2])
+                                    api.send(sender,f"Доступ добавлен для @{username}. Попросите пользователя отправить /webconnect в личном чате с ботом.")
+                                except ValueError as exc:
+                                    api.send(sender,str(exc))
+                            elif cmd=="/webdeny":
+                                try:
+                                    username,user_id,removed=web_users.deny((msg.get("text") or "").partition(" ")[2])
+                                    if removed and user_id is not None:
+                                        await web_users.disconnect(user_id)
+                                    api.send(sender,
+                                        f"Доступ @{username} отозван; сохранённая сессия удалена."
+                                        if removed and user_id is not None else
+                                        f"Доступ @{username} удалён из списка."
+                                        if removed else f"@{username} не было в списке доступа.")
+                                except ValueError as exc:
+                                    api.send(sender,str(exc))
+                            else:
+                                rows=web_users.allowed_users()
+                                api.send(sender,"Разрешённые пользователи:\n"+"\n".join(
+                                    f"@{name}"+(f" · ID {uid}" if uid else " · ещё не подключался")
+                                    for name,uid,added in rows) if rows else "Список доступа пуст.")
                         allowed={"/webconnect","/webqr","/webauth","/webstatus","/websource","/websources","/webscan","/webcastings","/webdisconnect"}
                         if chat.get("type")=="private" and cmd in allowed:
                             handled=True
-                            if sender!=owner or owner<=0:
-                                api.send(sender,"Функция доступна только владельцу в пилоте.")
-                            elif web_pilot is None:
-                                api.send(sender,"Эксперимент Telegram Web пока выключен на сервере.")
+                            if web_users is None:
+                                api.send(sender,"Подключение Telegram Web пока выключено на сервере.")
+                            elif not web_users.is_allowed(sender,sender_username):
+                                api.send(sender,"Подключение доступно только пользователям из списка разрешённых. Обратитесь к администратору бота.")
                             elif cmd=="/webconnect":
-                                api.send(sender,
-                                   "Вход на облачном сервере предоставляет доступ к Telegram-аккаунту. "
-                                   "QR и браузерная сессия чувствительны. Читаются только вручную выбранные "
-                                   "одобренные публичные источники. Отключение: /webdisconnect. "
-                                   "Подтверждение:",reply_markup={"inline_keyboard":[[
-                                      {"text":"Подключить","callback_data":"web:consent"},
-                                      {"text":"Отмена","callback_data":"web:cancel"}]]})
-                            elif cmd=="/webqr":
-                                api.send(sender,await web_pilot.qr() if web_pilot.store.consented()
-                                         else "Сначала /webconnect")
-                            elif cmd=="/webstatus":
-                                api.send(sender,await web_pilot.status())
-                            elif cmd=="/webauth":
-                                try:
-                                    api.send(sender,await web_pilot.auth_link())
-                                except ValueError:
-                                    api.send(sender,'Ссылка пока недоступна. Сначала /webconnect, /webqr, затем /webstatus. После повторных попыток подождите 10 минут.')
-                            elif cmd=="/websource":
-                                try:
-                                    name=web_pilot.store.select_source((msg.get("text") or "").partition(" ")[2])
-                                    api.send(sender,"Источник выбран: @"+name)
-                                except ValueError as exc:
-                                    api.send(sender,str(exc))
-                            elif cmd=="/websources":
-                                api.send(sender,"Источники: "+", ".join("@"+r[0] for r in web_pilot.store.sources()))
-                            elif cmd=="/webscan":
-                                api.send(sender,await web_pilot.scan())
-                            elif cmd=="/webcastings":
-                                rows=web_pilot.store.latest()
-                                api.send(sender,"\n\n".join(
-                                  f"@{n}: {body[:220]}\nhttps://t.me/{n}/{mid}"
-                                  for n,mid,body,ts in rows) or "Доставленных объявлений пока нет")
-                            elif cmd=="/webdisconnect":
-                                api.send(sender,"Удалить локальную сессию и личные данные?",
-                                   reply_markup={"inline_keyboard":[[
-                                     {"text":"Удалить","callback_data":"web:delete"},
-                                     {"text":"Отмена","callback_data":"web:cancel"}]]})
+                                db.register(sender)
+                                pilot=web_users.get(sender)
+                                if pilot.store.consented():
+                                    try:
+                                        await web_users.activate(sender)
+                                        api.send(sender,"Ваше подключение уже подтверждено. Продолжить: /webstatus или /webqr.")
+                                    except ValueError as exc:
+                                        api.send(sender,str(exc))
+                                else:
+                                    api.send(sender,
+                                       "Подключение даст серверу доступ к вашему Telegram Web. "
+                                       "Сессия, объявления из выбранных источников и результаты проверок "
+                                       "хранятся на сервере до /webdisconnect. Сборщик обращается только "
+                                       "к разрешённым и выбранным источникам; тексты личных чатов не запрашивает. "
+                                       "Продолжая, вы разрешаете эту обработку. Отозвать доступ можно здесь "
+                                       "и в Telegram → Настройки → Устройства. Подтвердить подключение?",
+                                       reply_markup={"inline_keyboard":[[
+                                          {"text":"Подключить свой аккаунт","callback_data":"web:consent"},
+                                          {"text":"Отмена","callback_data":"web:cancel"}]]})
+                            else:
+                                pilot=web_users.get(sender,create=False)
+                                if pilot is None or not pilot.store.consented():
+                                    api.send(sender,"Сначала подключите свой аккаунт: /webconnect.")
+                                else:
+                                    try:
+                                        await web_users.activate(sender)
+                                        if cmd=="/webqr":
+                                            api.send(sender,await pilot.qr())
+                                        elif cmd=="/webstatus":
+                                            api.send(sender,await pilot.status())
+                                        elif cmd=="/webauth":
+                                            api.send(sender,await pilot.auth_link())
+                                        elif cmd=="/websource":
+                                            name=pilot.store.select_source((msg.get("text") or "").partition(" ")[2])
+                                            api.send(sender,"Источник выбран: @"+name)
+                                        elif cmd=="/websources":
+                                            api.send(sender,"Источники: "+", ".join("@"+r[0] for r in pilot.store.sources()))
+                                        elif cmd=="/webscan":
+                                            api.send(sender,await pilot.scan())
+                                        elif cmd=="/webcastings":
+                                            rows=pilot.store.latest()
+                                            api.send(sender,"\n\n".join(
+                                              f"@{n}: {body[:220]}\nhttps://t.me/{n}/{mid}"
+                                              for n,mid,body,ts in rows) or "Доставленных объявлений пока нет")
+                                        elif cmd=="/webdisconnect":
+                                            api.send(sender,"Удалить сессию Telegram Web и данные сборщика?",
+                                               reply_markup={"inline_keyboard":[[
+                                                 {"text":"Удалить","callback_data":"web:delete"},
+                                                 {"text":"Отмена","callback_data":"web:cancel"}]]})
+                                    except ValueError as exc:
+                                        api.send(sender,str(exc))
                         callback=update.get("callback_query") or {}
                         data=callback.get("data") or ""
                         caller=(callback.get("from") or {}).get("id")
+                        caller_username=(callback.get("from") or {}).get("username")
                         if data.startswith("web:") or data.startswith("webfb:"):
                             handled=True
                             callback_chat=(callback.get('message') or {}).get('chat') or {}
-                            if caller==owner and callback_chat.get('type')=='private' and callback_chat.get('id')==owner and web_pilot is not None:
+                            if (web_users is not None and isinstance(caller,int)
+                                    and callback_chat.get('type')=='private'
+                                    and callback_chat.get('id')==caller
+                                    and web_users.is_allowed(caller,caller_username)):
                                 if data=="web:consent":
-                                    web_pilot.store.consent()
-                                    api.send(caller,"Подтверждено. Нажмите /webqr.")
+                                    try:
+                                        db.register(caller)
+                                        await web_users.consent(caller)
+                                        api.send(caller,"Подключение подтверждено. Откройте /webqr и войдите в свой аккаунт.")
+                                    except ValueError as exc:
+                                        api.send(caller,str(exc))
                                 elif data=="web:delete":
-                                    api.send(caller,await web_pilot.disconnect())
+                                    api.send(caller,await web_users.disconnect(caller))
                                 elif data=="web:cancel":
                                     api.send(caller,"Отменено.")
                                 elif data.startswith("webfb:"):
@@ -702,8 +763,10 @@ async def run():
                                     if len(parts)==4:
                                         try:
                                             mid=int(parts[3])
-                                            ok=web_pilot.store.add_feedback(parts[2],mid,
+                                            pilot=web_users.get(caller,create=False)
+                                            ok=(pilot.store.add_feedback(parts[2],mid,
                                               "relevant" if parts[1]=="yes" else "irrelevant")
+                                              if pilot is not None else False)
                                             api.send(caller,"Оценка сохранена." if ok else "Публикация не найдена.")
                                         except ValueError:
                                             pass
@@ -732,17 +795,15 @@ async def run():
         tasks=[task for task in (locals().get("public_task"),
                                   locals().get("client_task"),
                                   locals().get("guardian_task"),
-                                  locals().get("web_task")) if task is not None]
+                                  locals().get("web_restore_task")) if task is not None]
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks,return_exceptions=True)
-        if locals().get('web_pilot') is not None and web_pilot.started:
-            await web_pilot.reader._context.close()
-            if web_pilot.reader._pw:
-                await web_pilot.reader._pw.stop()
-        if locals().get('web_pilot') is not None and web_pilot.auth_portal:
-            await asyncio.to_thread(web_pilot.auth_portal.close)
+        if locals().get('web_users') is not None:
+            await web_users.close()
+        if locals().get('web_portal') is not None:
+            await asyncio.to_thread(web_portal.close)
         db.close()
 
 def main():
