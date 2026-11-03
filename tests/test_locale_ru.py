@@ -48,5 +48,5 @@ class LanguageTests(unittest.TestCase):
         self.assertNotIn("pending",self.send(999,"/admin"))
     def test_labels(self):
         output=str(menu())+str(gender_menu())
-        for label in ("Предложить канал","Источники","Мой профиль","Мужской","Женский","Любой"):
+        for label in ("Предложить канал","Мои группы","Профиль","Мужской","Женский","Любой"):
             self.assertIn(label,output)

@@ -50,6 +50,17 @@ class WebOwnerIsolationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.owner.remove_source("someothergroup"))
         self.assertEqual([row[0] for row in self.owner.sources()], ["moscowfilms"])
 
+    async def test_user_can_add_a_multiline_source_list(self):
+        added=self.owner.select_sources("@kinocekh,\n• https://t.me/castingnews\n@kinocekh")
+        self.assertEqual(added,["kinocekh","castingnews"])
+        self.assertEqual({row[0] for row in self.owner.sources()},
+                         {"moscowfilms","kinocekh","castingnews"})
+
+    async def test_source_list_rejects_entire_message_if_any_item_is_invalid(self):
+        with self.assertRaisesRegex(ValueError,"Не распознал"):
+            self.owner.select_sources("@kinocekh\nhttps://t.me/+privateInvite")
+        self.assertEqual([row[0] for row in self.owner.sources()], ["moscowfilms"])
+
     async def test_private_invite_is_not_a_valid_source(self):
         with self.assertRaises(ValueError):
             self.owner.select_source("https://t.me/+privateInvite")

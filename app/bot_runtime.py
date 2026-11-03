@@ -21,9 +21,11 @@ from app.quality_guardian import inspect as inspect_quality, render as render_qu
 
 log = logging.getLogger("casting.bot")
 HELP = (
-    "🎬 Поиск кастингов из публичных Telegram-каналов\n\n"
+    "🎬 Поиск кастингов\n\n"
     "Я самостоятельно проверяю выбранные публичные каналы, "
     "отбираю объявления по вашему профилю и присылаю подходящие.\n\n"
+    "Чтобы управлять сбором, откройте 📋 Меню внизу чата. Там можно подключить аккаунт, "
+    "добавить сразу несколько групп, посмотреть список и статус проверки.\n\n"
     "/profile — мой профиль\n"
     "/city Москва — город\n"
     "/gender — пол (выбор кнопкой)\n"
@@ -33,11 +35,10 @@ HELP = (
     "/castings — мои последние находки\n"
     "/pause и /resume — уведомления\n"
     "/status — состояние\n/ready — доступность источников\n/scan — проверить источники\n/suggest — предложить канал\n\n"
-    "/webconnect — подключить Telegram Web (по допуску администратора)\n"
-    "/websource @username — добавить публичную группу/канал\n"
-    "/webremove @username — убрать источник\n"
-    "/websources и /webscan — источники и проверка\n"
-    "/webstatus и /webdisconnect — состояние и отключение\n"
+    "/webconnect — подключить аккаунт (после допуска администратора)\n"
+    "/websource @username — добавить одну публичную группу\n"
+    "/websources — список и состояние источников\n"
+    "/webdisconnect — отключить сборщик\n"
     "Предложить новый канал можно через /suggest."
 )
 ADMIN_HELP = ("\n\nДля администратора: /admin, /addsource "
@@ -105,12 +106,48 @@ def profile_menu():
 
 def menu():
     return {"inline_keyboard":[
+        [{"text":"➕ Добавить группы","callback_data":"web:add"},
+         {"text":"📋 Мои группы","callback_data":"web:sources"}],
+        [{"text":"🔎 Проверить группы","callback_data":"web:scan"},
+         {"text":"📊 Статус сбора","callback_data":"web:status"}],
+        [{"text":"🔐 Подключить аккаунт","callback_data":"web:connect"}],
         [{"text":"📨 Предложить канал","callback_data":"suggest:start"},
-         {"text":"📚 Источники","callback_data":"menu:sources"}],
-        [{"text":"🔎 Проверить источники","callback_data":"scan:now"}],
-        [{"text":"👤 Мой профиль","callback_data":"menu:profile"},
-         {"text":"🎬 Кастинги","callback_data":"menu:castings"}]
+         {"text":"👤 Профиль","callback_data":"menu:profile"}],
+        [{"text":"🎬 Мои кастинги","callback_data":"menu:castings"}]
     ]}
+
+def web_sources_report(pilot, scan_result: str | None = None) -> tuple[str, dict]:
+    rows=pilot.store.sources()
+    if not rows:
+        body="Ваш список групп пока пуст. Нажмите «➕ Добавить группы» и отправьте username списком."
+        return body,{"inline_keyboard":[[
+            {"text":"➕ Добавить группы","callback_data":"web:add"},
+            {"text":"↩️ В меню","callback_data":"web:menu"}]]}
+    lines=[]
+    for name,last_id,next_scan,checked,successful,error,visible,new,truncated in rows:
+        if error:
+            state=f"⚠️ Проверка: {error}"
+        elif successful:
+            state=(f"✅ Успешно: {readable_time(successful)}; видно постов: {visible}, "
+                   f"новых: {new}")
+            if truncated:
+                state += "; Telegram показал не всю историю"
+        elif checked:
+            state=f"⚠️ Последняя попытка: {readable_time(checked)}, успеха пока нет"
+        else:
+            state="🕒 Ожидает первой проверки"
+        lines.append(f"@{name}\n{state}")
+    heading="📋 Ваши группы для сбора:\n\n"
+    if scan_result:
+        heading="🔎 Результат проверки: "+scan_result+"\n\n"
+    keyboard=[[{"text":f"Убрать @{row[0]}","callback_data":f"web:remove:{row[0]}"}]
+              for row in rows[:20]]
+    keyboard.extend([
+        [{"text":"➕ Добавить группы","callback_data":"web:add"},
+         {"text":"🔎 Проверить группы","callback_data":"web:scan"}],
+        [{"text":"↩️ В меню","callback_data":"web:menu"}]
+    ])
+    return heading+"\n\n".join(lines),{"inline_keyboard":keyboard}
 
 def menu_reply_keyboard():
     return {"keyboard":[[{"text":"📋 Меню"}]],
@@ -631,6 +668,7 @@ async def run():
         web_users=None
         web_portal=None
         web_restore_task=None
+        web_group_prompt=set()
         if os.getenv("WEB_QR_PILOT_ENABLED","false").lower() in ("1","true","yes") and owner>0:
             web_users=WebUserManager(db,api,owner)
             auth_base=os.getenv('WEB_AUTH_BASE_URL','').strip()
@@ -658,9 +696,35 @@ async def run():
                         sender=(msg.get("from") or {}).get("id")
                         sender_username=(msg.get("from") or {}).get("username")
                         chat=msg.get("chat") or {}
-                        cmd=(msg.get("text") or "").strip().split(" ",1)[0].split("@")[0].lower()
+                        message_text=(msg.get("text") or "").strip()
+                        cmd=message_text.split(" ",1)[0].split("@")[0].lower()
+                        if (chat.get("type")=="private" and isinstance(sender,int)
+                                and sender in web_group_prompt):
+                            handled=True
+                            web_group_prompt.discard(sender)
+                            if cmd=="/cancel":
+                                api.send(sender,"Добавление групп отменено.",reply_markup=menu())
+                            elif web_users is None or not web_users.is_allowed(sender,sender_username):
+                                api.send(sender,"Подключение недоступно. Обратитесь к администратору бота.")
+                            else:
+                                pilot=web_users.get(sender,create=False)
+                                try:
+                                    if pilot is None or not pilot.store.consented():
+                                        raise ValueError("Сначала подключите аккаунт через кнопку «🔐 Подключить аккаунт».")
+                                    names=pilot.store.select_sources(message_text)
+                                    await web_users.activate(sender)
+                                    text=("✅ Добавлено групп: {}\n{}\n\n".format(
+                                        len(names),", ".join("@"+name for name in names))+
+                                        "Проверка начнётся автоматически. Можно запустить её кнопкой ниже.")
+                                    api.send(sender,text,reply_markup=web_sources_report(pilot)[1])
+                                except ValueError as exc:
+                                    if pilot is not None and pilot.store.consented():
+                                        web_group_prompt.add(sender)
+                                    api.send(sender,str(exc)+"\nПопробуйте ещё раз или отправьте /cancel.",
+                                        reply_markup={"inline_keyboard":[[
+                                            {"text":"Отмена","callback_data":"web:cancel"}]]})
                         admin_web_commands={"/weballow","/webdeny","/weballowed"}
-                        if chat.get("type")=="private" and cmd in admin_web_commands:
+                        if not handled and chat.get("type")=="private" and cmd in admin_web_commands:
                             handled=True
                             if sender!=owner or owner<=0:
                                 api.send(sender,"Управлять списком доступа может только администратор.")
@@ -690,7 +754,7 @@ async def run():
                                     f"@{name}"+(f" · ID {uid}" if uid else " · ещё не подключался")
                                     for name,uid,added in rows) if rows else "Список доступа пуст.")
                         allowed={"/webconnect","/webqr","/webauth","/webstatus","/websource","/webremove","/websources","/webscan","/webcastings","/webdisconnect"}
-                        if chat.get("type")=="private" and cmd in allowed:
+                        if not handled and chat.get("type")=="private" and cmd in allowed:
                             handled=True
                             if web_users is None:
                                 api.send(sender,"Подключение Telegram Web пока выключено на сервере.")
@@ -726,27 +790,32 @@ async def run():
                                         if cmd=="/webqr":
                                             api.send(sender,await pilot.qr())
                                         elif cmd=="/webstatus":
-                                            api.send(sender,await pilot.status())
+                                            report,markup=web_sources_report(pilot)
+                                            api.send(sender,(await pilot.status())+"\n\n"+report,
+                                                reply_markup=markup)
                                         elif cmd=="/webauth":
                                             api.send(sender,await pilot.auth_link())
                                         elif cmd=="/websource":
                                             name=pilot.store.select_source((msg.get("text") or "").partition(" ")[2])
-                                            api.send(sender,"✅ Источник добавлен: @"+name+
-                                                ". Он должен быть доступен в чатах вашего Telegram-аккаунта; проверка выполняется автоматически.")
+                                            report,markup=web_sources_report(pilot)
+                                            api.send(sender,"✅ Группа добавлена: @"+name+
+                                                ". Автопроверка начнётся в ближайший цикл.\n\n"+report,
+                                                reply_markup=markup)
                                         elif cmd=="/webremove":
                                             raw=(msg.get("text") or "").partition(" ")[2]
                                             removed=pilot.store.remove_source(raw)
                                             name=normalize_channel(raw)
-                                            api.send(sender,("✅ Источник удалён: @"+name) if removed else
-                                                     ("Источник @"+name+" не был добавлен."))
+                                            report,markup=web_sources_report(pilot)
+                                            api.send(sender,("✅ Группа удалена: @"+name+"\n\n" if removed else
+                                                ("Группы @"+name+" не было в списке.\n\n"))+report,
+                                                reply_markup=markup)
                                         elif cmd=="/websources":
-                                            rows=pilot.store.sources()
-                                            api.send(sender,"Источники Telegram Web:\n"+"\n".join(
-                                                "@{} — {}".format(r[0],r[5] or ("проверено, новых {}".format(r[7]) if r[4] else "ожидает проверки"))
-                                                for r in rows) if rows else
-                                                "Список пуст. Добавьте группу: /websource @username")
+                                            report,markup=web_sources_report(pilot)
+                                            api.send(sender,report,reply_markup=markup)
                                         elif cmd=="/webscan":
-                                            api.send(sender,await pilot.scan())
+                                            result=await pilot.scan()
+                                            report,markup=web_sources_report(pilot,result)
+                                            api.send(sender,report,reply_markup=markup)
                                         elif cmd=="/webcastings":
                                             rows=pilot.store.latest()
                                             api.send(sender,"\n\n".join(
@@ -770,16 +839,108 @@ async def run():
                                     and callback_chat.get('type')=='private'
                                     and callback_chat.get('id')==caller
                                     and web_users.is_allowed(caller,caller_username)):
-                                if data=="web:consent":
+                                if data=="web:menu":
+                                    web_group_prompt.discard(caller)
+                                    api.send(caller,HELP,reply_markup=menu())
+                                elif data=="web:connect":
+                                    pilot=web_users.get(caller)
+                                    if pilot.store.consented():
+                                        try:
+                                            await web_users.activate(caller)
+                                            api.send(caller,await pilot.status(),reply_markup=menu())
+                                        except ValueError as exc:
+                                            api.send(caller,str(exc))
+                                    else:
+                                        api.send(caller,
+                                            "Подключение позволит сборщику читать только выбранные вами группы "
+                                            "из Telegram Web. Сессия и результаты хранятся на сервере до отключения. "
+                                            "Продолжить?",
+                                            reply_markup={"inline_keyboard":[[
+                                                {"text":"Подключить мой аккаунт","callback_data":"web:consent"},
+                                                {"text":"Отмена","callback_data":"web:cancel"}]]})
+                                elif data=="web:add":
+                                    pilot=web_users.get(caller,create=False)
+                                    if pilot is None or not pilot.store.consented():
+                                        api.send(caller,"Сначала подключите аккаунт кнопкой ниже.",
+                                            reply_markup={"inline_keyboard":[[
+                                                {"text":"🔐 Подключить аккаунт","callback_data":"web:connect"},
+                                                {"text":"↩️ В меню","callback_data":"web:menu"}]]})
+                                    else:
+                                        try:
+                                            await web_users.activate(caller)
+                                            web_group_prompt.add(caller)
+                                            api.send(caller,
+                                                "Пришлите публичные группы одним сообщением: по одному @username "
+                                                "на строке, через пробел, запятую или точку с запятой.\n\n"
+                                                "Можно отправить ссылки t.me. Закрытые приглашения не поддерживаются.",
+                                                reply_markup={"inline_keyboard":[[
+                                                    {"text":"Отмена","callback_data":"web:cancel"}]]})
+                                        except ValueError as exc:
+                                            api.send(caller,str(exc))
+                                elif data=="web:sources":
+                                    pilot=web_users.get(caller,create=False)
+                                    if pilot is None or not pilot.store.consented():
+                                        api.send(caller,"Подключите Telegram-аккаунт, чтобы увидеть свой список групп.",
+                                            reply_markup={"inline_keyboard":[[
+                                                {"text":"🔐 Подключить аккаунт","callback_data":"web:connect"}]]})
+                                    else:
+                                        try:
+                                            await web_users.activate(caller)
+                                            report,markup=web_sources_report(pilot)
+                                            api.send(caller,report,reply_markup=markup)
+                                        except ValueError as exc:
+                                            api.send(caller,str(exc))
+                                elif data=="web:status":
+                                    pilot=web_users.get(caller,create=False)
+                                    if pilot is None or not pilot.store.consented():
+                                        api.send(caller,"Сборщик не подключён. Нажмите «🔐 Подключить аккаунт».",
+                                            reply_markup=menu())
+                                    else:
+                                        try:
+                                            await web_users.activate(caller)
+                                            report,markup=web_sources_report(pilot)
+                                            api.send(caller,(await pilot.status())+"\n\n"+report,
+                                                reply_markup=markup)
+                                        except ValueError as exc:
+                                            api.send(caller,str(exc))
+                                elif data=="web:scan":
+                                    pilot=web_users.get(caller,create=False)
+                                    if pilot is None or not pilot.store.consented():
+                                        api.send(caller,"Сначала подключите Telegram-аккаунт.",reply_markup=menu())
+                                    else:
+                                        try:
+                                            await web_users.activate(caller)
+                                            result=await pilot.scan()
+                                            report,markup=web_sources_report(pilot,result)
+                                            api.send(caller,report,reply_markup=markup)
+                                        except ValueError as exc:
+                                            api.send(caller,str(exc))
+                                elif data.startswith("web:remove:"):
+                                    pilot=web_users.get(caller,create=False)
+                                    try:
+                                        name=normalize_channel(data.partition("web:remove:")[2])
+                                        removed=(pilot.store.remove_source(name)
+                                                 if pilot is not None and pilot.store.consented() else False)
+                                        report,markup=web_sources_report(pilot) if pilot else (
+                                            "Сборщик не подключён.",menu())
+                                        api.send(caller,("✅ Группа удалена: @"+name+"\n\n" if removed else
+                                            ("Группы @"+name+" нет в списке.\n\n"))+report,
+                                            reply_markup=markup)
+                                    except ValueError as exc:
+                                        api.send(caller,str(exc))
+                                elif data=="web:consent":
                                     try:
                                         db.register(caller)
                                         await web_users.consent(caller)
-                                        api.send(caller,"Подключение подтверждено. Откройте /webqr и войдите в свой аккаунт.")
+                                        api.send(caller,
+                                            "Подключение подтверждено. Завершите вход через /webqr, "
+                                            "затем кнопки меню станут доступны.",reply_markup=menu())
                                     except ValueError as exc:
                                         api.send(caller,str(exc))
                                 elif data=="web:delete":
                                     api.send(caller,await web_users.disconnect(caller))
                                 elif data=="web:cancel":
+                                    web_group_prompt.discard(caller)
                                     api.send(caller,"Отменено.")
                                 elif data.startswith("webfb:"):
                                     parts=data.split(":")

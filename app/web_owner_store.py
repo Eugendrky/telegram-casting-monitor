@@ -6,6 +6,7 @@ Only approved source publications reach each user's delivery queue.
 from __future__ import annotations
 
 import time
+import re
 from app.casting_quality import actionable
 from app.config import Profile
 from app.matcher import match_post
@@ -68,25 +69,48 @@ class WebOwnerStore:
             )
 
     def select_source(self, raw: str) -> str:
-        username = normalize_channel(raw)
+        return self.select_sources(raw)[0]
+
+    @staticmethod
+    def normalize_source_list(raw: str) -> list[str]:
+        cleaned = re.sub(r"(?m)^\s*[•*–-]+\s*", "", raw or "")
+        tokens = [part for part in re.split(r"[\s,;]+", cleaned.strip()) if part]
+        if not tokens:
+            raise ValueError("Пришлите публичные @username, по одному на строке или через запятую.")
+        names=[]
+        invalid=[]
+        for token in tokens:
+            try:
+                name=normalize_channel(token)
+            except ValueError:
+                invalid.append(token)
+            else:
+                if name not in names:
+                    names.append(name)
+        if invalid:
+            raise ValueError("Не распознал: {}. Пришлите публичные @username или ссылки t.me.".format(
+                ", ".join(invalid[:5])))
+        return names
+
+    def select_sources(self, raw: str) -> list[str]:
+        usernames = self.normalize_source_list(raw)
         if not self.consented():
             raise ValueError("Сначала подтвердите подключение через /webconnect")
         with self.db._lock, self.db.connection:
-            self.db.connection.execute(
-                "INSERT OR IGNORE INTO web_owner_sources(user_id,username) VALUES(?,?)",
-                (self.owner_id,username))
-            # Joining a source and selecting it again is an explicit request to
-            # retry a previous lookup miss. Clear only that recoverable error;
-            # Telegram rate limits and other failures must keep their cooldown.
-            self.db.connection.execute(
-                """UPDATE web_owner_sources SET next_scan=0,last_error=NULL
-                   WHERE user_id=? AND username=?
-                     AND last_error IN (
-                       'Источник не найден среди первых 500 чатов Telegram Web',
-                       'Группа отсутствует среди доступных чатов аккаунта'
-                     )""",
-                (self.owner_id,username))
-        return username
+            for username in usernames:
+                self.db.connection.execute(
+                    "INSERT OR IGNORE INTO web_owner_sources(user_id,username) VALUES(?,?)",
+                    (self.owner_id,username))
+                # Retry a previous lookup miss, while preserving Telegram cooldowns.
+                self.db.connection.execute(
+                    """UPDATE web_owner_sources SET next_scan=0,last_error=NULL
+                       WHERE user_id=? AND username=?
+                         AND last_error IN (
+                           'Источник не найден среди первых 500 чатов Telegram Web',
+                           'Группа отсутствует среди доступных чатов аккаунта'
+                         )""",
+                    (self.owner_id,username))
+        return usernames
 
     def remove_source(self, raw: str) -> bool:
         username = normalize_channel(raw)
