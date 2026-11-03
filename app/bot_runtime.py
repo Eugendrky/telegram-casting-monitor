@@ -30,10 +30,7 @@ HELP = (
     "Профиль: /profile — город, пол, возраст и рост."
 )
 ADMIN_HELP = ("\n\nДля администратора: /admin, /addsource "
-              "(со ссылкой на канал), /publicstatus.\n"
-              "Доступ к Telegram Web: /weballow @username, /webdeny @username, /weballowed.\n"
-              "QR-авторизация Telegram Web: /webconnect → /webqr → /webstatus.\n"
-              "Облачный пароль вводится только по одноразовой ссылке /webauth.")
+              "(со ссылкой на канал), /publicstatus.")
 
 def link_for(chat: dict, message_id: int) -> str | None:
     username = chat.get("username")

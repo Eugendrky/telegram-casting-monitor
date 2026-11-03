@@ -27,7 +27,10 @@ class LanguageTests(unittest.TestCase):
         self.assertIn("Ваши кастинги",text)
         self.assertNotIn("BOT_OWNER_ID",text)
         self.assertNotIn("male|female|any",text)
-        self.assertIn("Для администратора",self.send(999,"/start"))
+        admin_text=self.send(999,"/start")
+        self.assertIn("Для администратора",admin_text)
+        self.assertNotIn("/webconnect",admin_text)
+        self.assertNotIn("/webauth",admin_text)
     def test_sources(self):
         self.db.add_public("moscowfilms")
         text=self.send(123,"/sources")
