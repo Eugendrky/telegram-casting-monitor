@@ -51,7 +51,7 @@ class LanguageTests(unittest.TestCase):
         for label in ("Предложить канал","Мои группы","Профиль","Мужской","Женский","Любой"):
             self.assertIn(label,output)
         rows=menu()["inline_keyboard"]
-        self.assertEqual(rows[0],[{"text":"✨ Актуальные кастинги","callback_data":"menu:castings"}])
+        self.assertEqual(rows[0],[{"text":"✨ Актуальные кастинги","style":"primary","callback_data":"menu:castings"}])
         self.assertNotIn("Web Source",str(menu()))
 
     def test_user_help_hides_internal_web_commands(self):

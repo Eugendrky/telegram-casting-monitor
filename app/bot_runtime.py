@@ -94,7 +94,7 @@ def profile_menu():
 
 def menu():
     return {"inline_keyboard":[
-        [{"text":"✨ Актуальные кастинги","callback_data":"menu:castings"}],
+        [{"text":"✨ Актуальные кастинги","style":"primary","callback_data":"menu:castings"}],
         [{"text":"➕ Добавить группы","callback_data":"web:add"},
          {"text":"📋 Мои группы","callback_data":"web:sources"}],
         [{"text":"🔎 Проверить группы","callback_data":"web:scan"},
