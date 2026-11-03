@@ -105,12 +105,12 @@ def menu():
 
 def looks_like_group_list(text: str) -> bool:
     """Recognize an explicit list of Telegram source links/usernames in any chat state."""
-    cleaned = re.sub(r"(?m)^\\s*[•*–-]+\\s*", "", text or "").strip()
-    tokens = [part for part in re.split(r"[\\s,;]+", cleaned) if part]
+    cleaned = re.sub(r"(?m)^\s*[•*–-]+\s*", "", text or "").strip()
+    tokens = [part for part in re.split(r"[\s,;]+", cleaned) if part]
     if not tokens:
         return False
     return all(
-        token.startswith("@") or re.search(r"(?:^|//)(?:www\\.)?(?:t\\.me|telegram\\.me)/", token, re.I)
+        token.startswith("@") or re.search(r"(?:^|//)(?:www\.)?(?:t\.me|telegram\.me)/", token, re.I)
         for token in tokens
     )
 
@@ -757,7 +757,7 @@ async def run():
                                         await web_users.activate(sender)
                                         report,markup=web_sources_report(pilot)
                                         api.send(sender,
-                                            "✅ Добавлено групп: {}\\n{}\\n\\nПроверка начнётся автоматически.\\n\\n{}".format(
+                                            "✅ Добавлено групп: {}\n{}\n\nПроверка начнётся автоматически.\n\n{}".format(
                                                 len(names),", ".join("@"+name for name in names),report),
                                             reply_markup=markup)
                                     except ValueError as exc:
