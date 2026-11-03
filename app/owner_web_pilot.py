@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+import time
 from pathlib import Path
 
 from app.cloud_web_reader import CloudWebReader,same_account
@@ -126,12 +127,25 @@ class OwnerWebPilot:
             return "Сначала подтвердите подключение: /webconnect."
         if not await self.verified():
             return "Сканирование остановлено: аккаунт Telegram не подтверждён."
+        due_rows=self.store.due()
+        if not due_rows:
+            rows=self.store.sources()
+            if not rows:
+                return "Список групп пуст. Нажмите «➕ Добавить группы»."
+            seconds=max(0,min(row[2] for row in rows)-int(time.time()))
+            minutes=max(1,(seconds+59)//60)
+            return ("Свежая проверка не запускалась: ещё действует интервал чтения Telegram. "
+                    f"Повторите примерно через {minutes} мин. Ниже показаны последние сохранённые статусы.")
+        due_names={row[0] for row in due_rows}
         async with self._scan_lock:
             await self.reader.scan_once()
             await self.deliver()
         status=[]
         for name,cursor,next_scan,checked,success,error,visible,new,truncated in self.store.sources():
-            status.append(f"@{name}: "+(error or f"проверено {visible}, новых {new}"))
+            if name not in due_names:
+                continue
+            status.append(f"@{name}: "+(f"ошибка проверки — {error}" if error else
+                f"проверено сейчас; видно {visible}, новых {new}"))
         return "\n".join(status) if status else "Нет выбранных источников. /websource @moscowfilms"
 
     async def deliver(self):

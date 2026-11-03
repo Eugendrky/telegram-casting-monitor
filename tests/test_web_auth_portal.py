@@ -4,6 +4,7 @@ import hashlib
 import http.client
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
@@ -224,3 +225,29 @@ class PilotAuthTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await self.pilot.run()
         self.pilot.start.assert_awaited_once()
+
+    async def test_manual_scan_reports_cooldown_without_rechecking(self):
+        self.pilot.store.consent()
+        self.pilot.store.select_source("moscowfilms")
+        now=int(time.time())
+        self.pilot.store.update_source("moscowfilms",error=None,delay=3600,now=now)
+        self.pilot.reader.scan_once=AsyncMock()
+
+        result=await self.pilot.scan()
+
+        self.assertIn("Свежая проверка не запускалась",result)
+        self.assertIn("интервал",result)
+        self.pilot.reader.scan_once.assert_not_awaited()
+
+    async def test_manual_scan_labels_only_due_sources_as_checked_now(self):
+        self.pilot.store.consent()
+        self.pilot.store.select_source("moscowfilms")
+        async def scan_once():
+            self.pilot.store.update_source("moscowfilms",error=None,visible=12,new=3)
+        self.pilot.reader.scan_once=AsyncMock(side_effect=scan_once)
+        self.pilot.deliver=AsyncMock()
+
+        result=await self.pilot.scan()
+
+        self.assertIn("проверено сейчас; видно 12, новых 3",result)
+        self.pilot.reader.scan_once.assert_awaited_once()
