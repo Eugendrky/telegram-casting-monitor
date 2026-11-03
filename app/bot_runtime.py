@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from app.bot_db import Database
@@ -24,7 +25,8 @@ HELP = (
     "🎬 Ваши кастинги\n\n"
     "Нажмите «✨ Актуальные кастинги», чтобы посмотреть подходящие объявления. "
     "Отклонённые вами объявления повторно не показываются.\n\n"
-    "Для сбора подключите аккаунт один раз и добавьте публичные группы через меню. "
+    "Для сбора подключите аккаунт один раз и отправьте боту ссылки на публичные группы "
+    "или их @имена. "
     "Бот проверяет их автоматически и присылает совпадения с вашим профилем.\n\n"
     "📋 Меню внизу чата: кастинги, группы, проверка и статус.\n"
     "Профиль: /profile — город, пол, возраст и рост."
@@ -100,6 +102,17 @@ def menu():
         [{"text":"📨 Предложить канал","callback_data":"suggest:start"},
          {"text":"👤 Профиль","callback_data":"menu:profile"}]
     ]}
+
+def looks_like_group_list(text: str) -> bool:
+    """Recognize an explicit list of Telegram source links/usernames in any chat state."""
+    cleaned = re.sub(r"(?m)^\\s*[•*–-]+\\s*", "", text or "").strip()
+    tokens = [part for part in re.split(r"[\\s,;]+", cleaned) if part]
+    if not tokens:
+        return False
+    return all(
+        token.startswith("@") or re.search(r"(?:^|//)(?:www\\.)?(?:t\\.me|telegram\\.me)/", token, re.I)
+        for token in tokens
+    )
 
 def castings_view_messages(pilot, limit: int = 5) -> list[tuple[str, dict]]:
     """Return a concise current view of delivered matches with their feedback actions."""
@@ -712,7 +725,44 @@ async def run():
                         chat=msg.get("chat") or {}
                         message_text=(msg.get("text") or "").strip()
                         cmd=message_text.split(" ",1)[0].split("@")[0].lower()
-                        if (chat.get("type")=="private" and isinstance(sender,int)
+                        source_message = (chat.get("type")=="private" and isinstance(sender,int)
+                                          and not message_text.startswith("/")
+                                          and looks_like_group_list(message_text))
+                        if source_message and db.awaiting_suggestion(sender):
+                            # An explicit suggestion flow takes priority over auto-adding a source.
+                            db.set_profile_prompt(sender,None)
+                            web_group_prompt.discard(sender)
+                        if source_message and not db.awaiting_suggestion(sender):
+                            # Handle pasted groups before a stale profile prompt can consume them.
+                            handled=True
+                            web_group_prompt.discard(sender)
+                            db.set_profile_prompt(sender,None)
+                            if web_users is None:
+                                api.send(sender,"Добавление групп сейчас недоступно. Попробуйте позже.")
+                            elif not web_users.is_allowed(sender,sender_username):
+                                api.send(sender,
+                                    "Сборщик доступен только пользователям с разрешённым доступом."
+                                )
+                            else:
+                                pilot=web_users.get(sender,create=False)
+                                if pilot is None or not pilot.store.consented():
+                                    api.send(sender,
+                                        "Распознал список групп. Чтобы начать сбор, подключите аккаунт один раз. "
+                                        "После подключения отправьте этот список ещё раз.",
+                                        reply_markup={"inline_keyboard":[[
+                                            {"text":"🔐 Подключить аккаунт","callback_data":"web:connect"}]]})
+                                else:
+                                    try:
+                                        names=pilot.store.select_sources(message_text)
+                                        await web_users.activate(sender)
+                                        report,markup=web_sources_report(pilot)
+                                        api.send(sender,
+                                            "✅ Добавлено групп: {}\\n{}\\n\\nПроверка начнётся автоматически.\\n\\n{}".format(
+                                                len(names),", ".join("@"+name for name in names),report),
+                                            reply_markup=markup)
+                                    except ValueError as exc:
+                                        api.send(sender,str(exc))
+                        if (not handled and chat.get("type")=="private" and isinstance(sender,int)
                                 and sender in web_group_prompt):
                             handled=True
                             web_group_prompt.discard(sender)
