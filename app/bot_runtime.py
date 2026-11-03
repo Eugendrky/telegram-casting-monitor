@@ -126,7 +126,9 @@ def web_sources_report(pilot, scan_result: str | None = None) -> tuple[str, dict
     lines=[]
     for name,last_id,next_scan,checked,successful,error,visible,new,truncated in rows:
         if error:
-            state=f"⚠️ Проверка: {error}"
+            state=f"⚠️ Последняя попытка: {readable_time(checked)}; {error}"
+            if successful:
+                state += f"\nПоследняя успешная: {readable_time(successful)}"
         elif successful:
             state=(f"✅ Успешно: {readable_time(successful)}; видно постов: {visible}, "
                    f"новых: {new}")
@@ -954,6 +956,8 @@ async def run():
                                             api.send(caller,"Оценка сохранена." if ok else "Публикация не найдена.")
                                         except ValueError:
                                             pass
+                            elif isinstance(caller,int) and callback_chat.get('type')=='private':
+                                api.send(caller,"Сборщик групп доступен пользователям, которых добавил администратор.")
                             if callback.get('id'):
                                 await asyncio.to_thread(api.call,'answerCallbackQuery',callback_query_id=callback['id'])
                         if not handled:
