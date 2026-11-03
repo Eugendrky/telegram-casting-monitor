@@ -3,10 +3,12 @@ import time
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock
+from types import SimpleNamespace
 
 from app.bot_db import Database
 from app.cloud_web_reader import CloudWebReader
 from app.web_owner_store import WebOwnerStore
+from app.bot_runtime import castings_view_messages
 
 class WebOwnerIsolationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -97,5 +99,42 @@ class WebOwnerIsolationTests(unittest.IsolatedAsyncioTestCase):
         self.owner.mark_delivery("moscowfilms",33,"sent")
         again=WebOwnerStore(self.db,101)
         self.assertIsNone(again.claim_next())
+
+    async def test_rejected_casting_is_hidden_and_never_requeued(self):
+        stamp=int(time.time())
+        self.owner.add_post("moscowfilms",34,
+           "Кастинг в Москве. Ищем актрису 25-35 лет",stamp)
+        self.assertIsNotNone(self.owner.claim_next())
+        self.owner.mark_delivery("moscowfilms",34,"sent")
+        self.assertTrue(self.owner.add_feedback("moscowfilms",34,"irrelevant"))
+        self.assertEqual(self.owner.latest(),[])
+        self.assertIsNone(self.owner.claim_next())
+        again=WebOwnerStore(self.db,101)
+        self.assertIsNone(again.claim_next())
+
+    async def test_castings_view_shows_fresh_delivered_matches_with_feedback(self):
+        stamp=int(time.time())
+        self.owner.add_post("moscowfilms",35,
+           "Кастинг в Москве. Ищем актрису 25-35 лет",stamp)
+        self.assertIsNotNone(self.owner.claim_next())
+        self.owner.mark_delivery("moscowfilms",35,"sent")
+
+        messages=castings_view_messages(SimpleNamespace(store=self.owner))
+
+        self.assertEqual(len(messages),1)
+        self.assertIn("Кастинг в Москве",messages[0][0])
+        buttons=messages[0][1]["inline_keyboard"][0]
+        self.assertEqual(buttons[1]["callback_data"],"webfb:no:moscowfilms:35")
+
+    async def test_castings_view_hides_old_delivered_posts(self):
+        stamp=int(time.time())-49*3600
+        self.owner.add_post("moscowfilms",36,
+           "Кастинг в Москве. Ищем актрису 25-35 лет",stamp)
+        self.assertIsNotNone(self.owner.claim_next())
+        self.owner.mark_delivery("moscowfilms",36,"sent")
+
+        messages=castings_view_messages(SimpleNamespace(store=self.owner))
+
+        self.assertIn("Подходящих объявлений пока нет",messages[0][0])
 if __name__=="__main__":
     unittest.main()

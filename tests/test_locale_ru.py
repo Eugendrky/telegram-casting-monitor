@@ -24,7 +24,7 @@ class LanguageTests(unittest.TestCase):
         return next(text for target,text,_ in reversed(self.api.messages) if target==user_id)
     def test_start_and_help(self):
         text=self.send(123,"/start")
-        self.assertIn("Поиск кастингов",text)
+        self.assertIn("Ваши кастинги",text)
         self.assertNotIn("BOT_OWNER_ID",text)
         self.assertNotIn("male|female|any",text)
         self.assertIn("Для администратора",self.send(999,"/start"))
@@ -50,3 +50,12 @@ class LanguageTests(unittest.TestCase):
         output=str(menu())+str(gender_menu())
         for label in ("Предложить канал","Мои группы","Профиль","Мужской","Женский","Любой"):
             self.assertIn(label,output)
+        rows=menu()["inline_keyboard"]
+        self.assertEqual(rows[0],[{"text":"✨ Актуальные кастинги","callback_data":"menu:castings"}])
+        self.assertNotIn("Web Source",str(menu()))
+
+    def test_user_help_hides_internal_web_commands(self):
+        text=self.send(123,"/start")
+        for command in ("/webconnect","/websource","/webdisconnect"):
+            self.assertNotIn(command,text)
+        self.assertIn("Отклонённые вами объявления повторно не показываются",text)

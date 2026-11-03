@@ -21,25 +21,13 @@ from app.quality_guardian import inspect as inspect_quality, render as render_qu
 
 log = logging.getLogger("casting.bot")
 HELP = (
-    "🎬 Поиск кастингов\n\n"
-    "Я самостоятельно проверяю выбранные публичные каналы, "
-    "отбираю объявления по вашему профилю и присылаю подходящие.\n\n"
-    "Чтобы управлять сбором, откройте 📋 Меню внизу чата. Там можно подключить аккаунт, "
-    "добавить сразу несколько групп, посмотреть список и статус проверки.\n\n"
-    "/profile — мой профиль\n"
-    "/city Москва — город\n"
-    "/gender — пол (выбор кнопкой)\n"
-    "/age 25 — возраст\n"
-    "/height 170 — рост\n"
-    "/sources — выбранные каналы и подписки\n"
-    "/castings — мои последние находки\n"
-    "/pause и /resume — уведомления\n"
-    "/status — состояние\n/ready — доступность источников\n/scan — проверить источники\n/suggest — предложить канал\n\n"
-    "/webconnect — подключить аккаунт (после допуска администратора)\n"
-    "/websource @username — добавить одну публичную группу\n"
-    "/websources — список и состояние источников\n"
-    "/webdisconnect — отключить сборщик\n"
-    "Предложить новый канал можно через /suggest."
+    "🎬 Ваши кастинги\n\n"
+    "Нажмите «✨ Актуальные кастинги», чтобы посмотреть подходящие объявления. "
+    "Отклонённые вами объявления повторно не показываются.\n\n"
+    "Для сбора подключите аккаунт один раз и добавьте публичные группы через меню. "
+    "Бот проверяет их автоматически и присылает совпадения с вашим профилем.\n\n"
+    "📋 Меню внизу чата: кастинги, группы, проверка и статус.\n"
+    "Профиль: /profile — город, пол, возраст и рост."
 )
 ADMIN_HELP = ("\n\nДля администратора: /admin, /addsource "
               "(со ссылкой на канал), /publicstatus.\n"
@@ -106,15 +94,42 @@ def profile_menu():
 
 def menu():
     return {"inline_keyboard":[
+        [{"text":"✨ Актуальные кастинги","callback_data":"menu:castings"}],
         [{"text":"➕ Добавить группы","callback_data":"web:add"},
          {"text":"📋 Мои группы","callback_data":"web:sources"}],
         [{"text":"🔎 Проверить группы","callback_data":"web:scan"},
          {"text":"📊 Статус сбора","callback_data":"web:status"}],
         [{"text":"🔐 Подключить аккаунт","callback_data":"web:connect"}],
         [{"text":"📨 Предложить канал","callback_data":"suggest:start"},
-         {"text":"👤 Профиль","callback_data":"menu:profile"}],
-        [{"text":"🎬 Мои кастинги","callback_data":"menu:castings"}]
+         {"text":"👤 Профиль","callback_data":"menu:profile"}]
     ]}
+
+def castings_view_messages(pilot, limit: int = 5) -> list[tuple[str, dict]]:
+    """Return a concise current view of delivered matches with their feedback actions."""
+    sources = pilot.store.sources()
+    if not sources:
+        return [("Список групп пуст. Добавьте публичные группы через меню — бот начнёт проверку автоматически.",
+                 {"inline_keyboard":[[{"text":"➕ Добавить группы","callback_data":"web:add"}] ]})]
+    rows = pilot.store.latest(limit=limit)
+    if not rows:
+        failed = [row for row in sources if row[5]]
+        if failed:
+            msg = "Пока нет доставленных совпадений. Не все группы удалось прочитать — откройте «Мои группы» для причин и статуса."
+            buttons = [[{"text":"📋 Показать группы","callback_data":"web:sources"},
+                        {"text":"📊 Статус сбора","callback_data":"web:status"}]]
+        else:
+            msg = "Подходящих объявлений пока нет. Бот продолжает проверять выбранные группы автоматически."
+            buttons = [[{"text":"🔎 Проверить группы","callback_data":"web:scan"},
+                        {"text":"📋 Мои группы","callback_data":"web:sources"}]]
+        return [(msg, {"inline_keyboard":buttons})]
+    result=[]
+    for name,mid,body,ts in rows:
+        text=f"🎬 @{name}\n\n{body[:3000]}\n\nhttps://t.me/{name}/{mid}"
+        markup={"inline_keyboard":[[
+            {"text":"👍 Подходит","callback_data":f"webfb:yes:{name}:{mid}"},
+            {"text":"👎 Не подходит","callback_data":f"webfb:no:{name}:{mid}"}]]}
+        result.append((text,markup))
+    return result
 
 def web_sources_report(pilot, scan_result: str | None = None) -> tuple[str, dict]:
     rows=pilot.store.sources()
@@ -834,14 +849,34 @@ async def run():
                         data=callback.get("data") or ""
                         caller=(callback.get("from") or {}).get("id")
                         caller_username=(callback.get("from") or {}).get("username")
-                        if data.startswith("web:") or data.startswith("webfb:"):
+                        if data.startswith("web:") or data.startswith("webfb:") or data=="menu:castings":
                             handled=True
                             callback_chat=(callback.get('message') or {}).get('chat') or {}
                             if (web_users is not None and isinstance(caller,int)
                                     and callback_chat.get('type')=='private'
                                     and callback_chat.get('id')==caller
                                     and web_users.is_allowed(caller,caller_username)):
-                                if data=="web:menu":
+                                if data=="menu:castings":
+                                    pilot=web_users.get(caller,create=False)
+                                    if pilot is None or not pilot.store.consented():
+                                        api.send(caller,
+                                            "Сначала подключите аккаунт и выберите группы. Это нужно, чтобы показать ваши актуальные кастинги.",
+                                            reply_markup={"inline_keyboard":[[
+                                                {"text":"🔐 Подключить аккаунт","callback_data":"web:connect"}]]})
+                                    else:
+                                        try:
+                                            await web_users.activate(caller)
+                                            if not await pilot.verified():
+                                                api.send(caller,
+                                                    "Telegram ещё не подтвердил подключение. Завершите вход, затем нажмите «✨ Актуальные кастинги» снова.",
+                                                    reply_markup={"inline_keyboard":[[
+                                                        {"text":"🔐 Статус подключения","callback_data":"web:status"}]]})
+                                            else:
+                                                for text,markup in castings_view_messages(pilot):
+                                                    api.send(caller,text,reply_markup=markup)
+                                        except ValueError as exc:
+                                            api.send(caller,str(exc))
+                                elif data=="web:menu":
                                     web_group_prompt.discard(caller)
                                     api.send(caller,HELP,reply_markup=menu())
                                 elif data=="web:connect":

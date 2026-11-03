@@ -238,13 +238,15 @@ class WebOwnerStore:
                    WHERE user_id=? AND username=? AND message_id=? AND delivery='sent'""",
                 (verdict,self.owner_id,username,message_id)).rowcount)
 
-    def latest(self, limit: int = 8):
+    def latest(self, limit: int = 5):
         with self.db._lock:
             return list(self.db.connection.execute(
                 """SELECT username,message_id,body,posted_at
                    FROM web_owner_posts WHERE user_id=? AND delivery='sent'
+                     AND COALESCE(verdict,'')!='irrelevant'
+                     AND posted_at>=?
                    ORDER BY posted_at DESC LIMIT ?""",
-                (self.owner_id,max(1,min(int(limit),20)))))
+                (self.owner_id,int(time.time())-48*3600,max(1,min(int(limit),20)))))
 
     def stats(self):
         with self.db._lock:
