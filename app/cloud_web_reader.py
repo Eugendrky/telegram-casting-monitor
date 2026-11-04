@@ -15,7 +15,9 @@ import os
 import time
 from pathlib import Path
 
-from app.public_channels import normalize_channel, source_id
+from app.public_channels import (
+    normalize_channel, fetch_preview, PreviewError, PreviewRateLimited,
+)
 
 LOG = logging.getLogger("casting.cloudweb")
 ORIGIN = "https://web.telegram.org/k/"
@@ -266,9 +268,41 @@ class CloudWebReader:
             peers=select_peers(await self._page.evaluate(INDEX_JS,500),approved)
             for name,cursor,_,_,_,_,_,_,_ in chosen:
                 if name not in peers:
-                    self.owner_store.update_source(name,
-                        error="Источник не найден среди первых 500 чатов Telegram Web",
-                        delay=3600)
+                    # A selected public channel may be readable through Telegram's
+                    # public web preview even when the user has not joined it.
+                    now=int(time.time())
+                    try:
+                        posts=await asyncio.to_thread(fetch_preview,name)
+                        messages=[{"id":post.message_id,"date":post.timestamp,
+                                   "text":post.text} for post in posts]
+                        recent=validate_posts(
+                            messages,now=now,lookback_hours=self.lookback_hours,
+                            cursor=cursor,
+                        )
+                        previous=sum(self.owner_store.stats().values())
+                        for mid,ts,body in recent:
+                            self.owner_store.add_post(name,mid,body,ts)
+                        matched=max(0,sum(self.owner_store.stats().values())-previous)
+                        self.owner_store.update_source(
+                            name,cursor=max((mid for mid,_,_ in recent),default=cursor),
+                            visible=len(posts),new=len(recent),delay=self.interval
+                        )
+                        LOG.info("Public Telegram preview %s: visible=%s recent=%s matches=%s",
+                                 name,len(posts),len(recent),matched)
+                    except PreviewRateLimited as exc:
+                        self.owner_store.update_source(
+                            name,error="Telegram временно ограничил запросы",
+                            delay=exc.retry_after,
+                        )
+                    except PreviewError as exc:
+                        self.owner_store.update_source(name,error=str(exc),delay=3600)
+                    except Exception:
+                        self.owner_store.update_source(
+                            name,error="Не удалось получить публичную страницу Telegram",
+                            delay=3600,
+                        )
+                        LOG.warning("Public Telegram preview failed for %s",name)
+                    await asyncio.sleep(3)
                     continue
                 now=int(time.time())
                 try:
