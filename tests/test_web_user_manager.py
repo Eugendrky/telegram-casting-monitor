@@ -1,9 +1,11 @@
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 from app.bot_db import Database
+from app.owner_web_pilot import OwnerWebPilot
 from app.web_user_manager import WebUserManager
 
 
@@ -50,6 +52,41 @@ class WebUserManagerTests(unittest.TestCase):
         manager._reserve(900)
         with self.assertRaisesRegex(ValueError, "максимальное число аккаунтов"):
             manager._reserve(101)
+
+    def test_release_browser_keeps_saved_telegram_consent(self):
+        pilot = self.manager.get(900)
+        pilot.store.consent()
+        context = AsyncMock()
+        playwright = AsyncMock()
+        pilot.started = True
+        pilot.reader._context = context
+        pilot.reader._pw = playwright
+        pilot.reader._page = object()
+
+        asyncio.run(pilot.release_browser())
+
+        context.close.assert_awaited_once()
+        playwright.stop.assert_awaited_once()
+        self.assertTrue(pilot.store.consented())
+        self.assertFalse(pilot.started)
+        self.assertIsNone(pilot.reader._context)
+        self.assertIsNone(pilot.reader._pw)
+        self.assertIsNone(pilot.reader._page)
+
+    def test_background_scan_releases_browser_after_due_scan(self):
+        pilot = self.manager.get(900)
+        pilot.store.consent()
+        pilot.store.select_source("moscowfilms")
+        pilot.started = True
+        pilot.verified = AsyncMock(return_value=True)
+        pilot.scan = AsyncMock()
+        pilot.release_browser = AsyncMock(side_effect=asyncio.CancelledError)
+
+        with self.assertRaises(asyncio.CancelledError):
+            asyncio.run(pilot.run())
+
+        pilot.scan.assert_awaited_once()
+        pilot.release_browser.assert_awaited_once()
 
 
 if __name__ == "__main__":
