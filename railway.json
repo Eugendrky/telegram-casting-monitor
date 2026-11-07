@@ -5,7 +5,7 @@
     "dockerfilePath": "Dockerfile.webpilot"
   },
   "deploy": {
-    "startCommand": "python -m app.bot_runtime",
+    "startCommand": "tini -s -- python -m app.bot_runtime",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
   }
