@@ -168,18 +168,45 @@ class OwnerWebPilot:
             else:
                 self.store.mark_delivery(name,mid,"sent")
 
+    async def release_browser(self):
+        """Release Chromium while keeping the persistent Telegram profile on disk."""
+        async with self._lock, self._scan_lock:
+            context,pw=self.reader._context,self.reader._pw
+            self.reader._context=self.reader._pw=self.reader._page=None
+            self.started=False
+            if context:
+                try:
+                    await context.close()
+                except Exception:
+                    LOG.warning("Telegram Web context could not be closed cleanly")
+            if pw:
+                try:
+                    await pw.stop()
+                except Exception:
+                    LOG.warning("Telegram Web browser process could not be stopped cleanly")
+
     async def run(self):
-        if self.store.consented():
-            try:
-                await self.start()
-            except Exception:
-                LOG.warning('Stored Web profile could not start; use /webqr to retry')
         while True:
             try:
-                if self.store.consented() and await self.verified():
-                    await self.scan()
-                elif self.started and not await self.verified():
-                    LOG.info("Web owner scan paused: identity not verified")
+                if self.store.consented():
+                    due=self.store.due()
+                    if due:
+                        if not self.started:
+                            await self.start()
+                        if await self.verified():
+                            try:
+                                await self.scan()
+                            finally:
+                                # Chromium is needed to scan, but not while
+                                # Telegram sources are waiting for their next interval.
+                                await self.release_browser()
+                        elif self.started:
+                            LOG.info("Web owner scan paused: identity not verified")
+                    elif self.started:
+                        if await self.verified():
+                            await self.release_browser()
+                        else:
+                            LOG.info("Web owner scan paused: identity not verified")
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
