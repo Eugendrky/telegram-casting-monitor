@@ -51,7 +51,7 @@ class LanguageTests(unittest.TestCase):
         self.assertNotIn("pending",self.send(999,"/admin"))
     def test_labels(self):
         output=str(menu())+str(gender_menu())
-        for label in ("Предложить канал","Мои группы","Профиль","Мужской","Женский","Любой"):
+        for label in ("Предложить канал","Открытые источники","Закрытые группы","Профиль","Мужской","Женский","Любой"):
             self.assertIn(label,output)
         rows=menu()["inline_keyboard"]
         self.assertEqual(rows[0],[{"text":"✨ Актуальные кастинги","style":"primary","callback_data":"menu:castings"}])

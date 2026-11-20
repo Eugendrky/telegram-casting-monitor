@@ -23,11 +23,18 @@ from app.quality_guardian import inspect as inspect_quality, render as render_qu
 log = logging.getLogger("casting.bot")
 HELP = (
     "🎬 Ваши кастинги\n\n"
-    "Нажмите «✨ Актуальные кастинги», чтобы посмотреть подходящие объявления. "
-    "Отклонённые вами объявления повторно не показываются.\n\n"
-    "Общий каталог уже подключён. Заполните профиль, чтобы получать подходящие роли.\n\n"
-    "📋 Меню внизу чата: кастинги, группы, проверка и статус.\n"
-    "Профиль: /profile — город, пол, возраст и рост."
+    "Бот сам проверяет каналы и группы, где объявления видны без входа в Telegram. "
+    "Подключать аккаунт и добавлять каналы для общей подборки не нужно.\n\n"
+    "Укажите в профиле город, пол, возраст и рост. Нажмите «✨ Актуальные кастинги», "
+    "чтобы посмотреть подборку. Новые совпадения придут сюда со ссылкой на публикацию. "
+    "Отклонённые вами объявления повторно не показываются."
+)
+GROUP_ACCESS = (
+    "🔒 Закрытые группы\n\n"
+    "Чтобы кастинги из закрытой группы попали в общую подборку, её администратор "
+    "должен разрешить рассылку и добавить бота с доступом к обычным сообщениям. "
+    "Затем владелец бота включает источник. Так бот получает новые объявления.\n\n"
+    "По одной ссылке-приглашению бот прочитать группу не может."
 )
 ADMIN_HELP = ("\n\nДля администратора: /admin, /addsource "
               "(со ссылкой на канал), /publicstatus.")
@@ -92,8 +99,8 @@ def profile_menu():
 def menu():
     return {"inline_keyboard":[
         [{"text":"✨ Актуальные кастинги","style":"primary","callback_data":"menu:castings"}],
-        [{"text":"📋 Каналы каталога","callback_data":"menu:sources"},
-         {"text":"Мои группы","callback_data":"web:options"}],
+        [{"text":"📋 Открытые источники","callback_data":"menu:sources"},
+         {"text":"🔒 Закрытые группы","callback_data":"web:options"}],
         [{"text":"📨 Предложить канал","callback_data":"suggest:start"},
          {"text":"👤 Профиль","callback_data":"menu:profile"}]
     ]}
@@ -195,14 +202,15 @@ class Receiver:
     def source_list(self,user_id: int):
         lines=[]
         for chat_id,title,kind,enabled,joined,username in self.db.sources():
-            if not joined:
+            if not joined or (user_id != self.owner_id and kind != "public"):
                 continue
             status="✅" if enabled else "⏳"
             following="🔔" if self.db.following(user_id,chat_id) else "🔕"
             lines.append(f"{status} {following} {title}\nКод источника: {chat_id}")
         if not lines:
             return "Источников пока нет. Администратор может добавить публичный канал командой /addsource."
-        return ("Источники:\n"+ "\n".join(lines[:35])+
+        heading = "Источники" if user_id == self.owner_id else "Открытые источники каталога"
+        return (heading + ":\n"+ "\n".join(lines[:35])+
                 "\n\nДля подписки: /follow с кодом источника. Для отключения: /unfollow с кодом источника."+
                 ("\nДля управления: /enable или /disable с кодом источника." if user_id==self.owner_id else ""))
 
@@ -278,7 +286,7 @@ class Receiver:
             if arg: self.submit_suggestion(user_id,arg)
             else:
                 self.db.set_waiting_for_suggestion(user_id,True)
-                self.api.send(user_id,"Пришлите ссылку на публичный Telegram-канал.")
+                self.api.send(user_id,"Пришлите @имя или ссылку на открытый Telegram-канал, где объявления видны без входа.")
         elif cmd=="/admin":
             if user_id!=self.owner_id: return
             counts=self.db.admin_counts()
@@ -466,7 +474,7 @@ class Receiver:
             self.request_scan(user_id)
         elif data=="suggest:start":
             self.db.set_waiting_for_suggestion(user_id,True)
-            self.api.send(user_id,"Пришлите ссылку на публичный Telegram-канал.")
+            self.api.send(user_id,"Пришлите @имя или ссылку на открытый Telegram-канал, где объявления видны без входа.")
         elif data=="menu:sources":
             self.api.send(user_id,self.source_list(user_id))
         elif data.startswith("profile:"):
@@ -924,7 +932,7 @@ async def run():
                                     and callback_chat.get('id')==caller
                                     and web_users.is_allowed(caller,caller_username)):
                                 if data=="web:options":
-                                    api.send(caller,"Личные группы Telegram",reply_markup=web_options())
+                                    api.send(caller,GROUP_ACCESS + "\n\nДля вас также доступен личный сбор через Telegram Web. Он работает с выбранными группами с @именем, которые видит ваш аккаунт. Совпадения приходят только вам.",reply_markup=web_options())
                                 elif data=="web:castings":
                                     pilot=web_users.get(caller,create=False)
                                     if pilot is None or not pilot.store.consented():
@@ -1061,7 +1069,10 @@ async def run():
                                         except ValueError:
                                             pass
                             elif isinstance(caller,int) and callback_chat.get('type')=='private':
-                                api.send(caller,"Сборщик групп доступен пользователям, которых добавил администратор.")
+                                if data == "web:options":
+                                    api.send(caller,GROUP_ACCESS,reply_markup=menu())
+                                else:
+                                    api.send(caller,"Личный сбор доступен пользователям, которых добавил администратор. Общий каталог доступен всем.",reply_markup=menu())
                             if callback.get('id'):
                                 await asyncio.to_thread(api.call,'answerCallbackQuery',callback_query_id=callback['id'])
                         if not handled:
