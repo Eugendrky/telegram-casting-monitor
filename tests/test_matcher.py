@@ -35,6 +35,11 @@ class MatcherTests(unittest.TestCase):
         result = match_post(text, _profile())
         self.assertFalse(result.matched)
 
+    def test_age_range_does_not_admit_younger_actor(self):
+        text = "Кастинг в Москве, ищем актрису от 30 до 45 лет."
+        self.assertFalse(match_post(text, _profile(age=22)).matched)
+        self.assertTrue(match_post(text, _profile(age=36)).matched)
+
     def test_rejects_closed(self) -> None:
         text = "Кастинг в Москве, девушки 20-30. Набор закрыт"
         result = match_post(text, _profile())

@@ -135,8 +135,10 @@ CITY_ALIASES: dict[str, tuple[str, ...]] = {
 AGE_RANGE_RE = re.compile(
     r"(?:возраст|лет|года?)?[^\d]{0,8}(\d{1,2})\s*[-–—]\s*(\d{1,2})\s*(?:лет|г\b|года)?"
 )
-AGE_FROM_RE = re.compile(r"(?:от|с)\s*(\d{1,2})\s*(?:до\s*(\d{1,2}))?\s*(?:лет|года)?")
-AGE_TO_RE = re.compile(r"(?:до|не старше)\s*(\d{1,2})\s*(?:лет|года)?")
+AGE_BOUND_RE = re.compile(
+    r"\b(?P<bound>от|с|до|не старше)\s*(?P<age>\d{1,2})"
+    r"(?:\s*до\s*(?P<upper>\d{1,2}))?\s*(?:лет|год(?:а)?)\b"
+)
 HEIGHT_RANGE_RE = re.compile(r"(?:рост)?[^\d]{0,6}(\d{2,3})\s*[-–—]\s*(\d{2,3})\s*(?:см)?")
 HEIGHT_FROM_RE = re.compile(r"рост[^\d]{0,10}(?:от\s*)?(\d{2,3})")
 
@@ -185,15 +187,15 @@ def _age_windows(text: str) -> list[tuple[int, int]]:
         lo, hi = int(match.group(1)), int(match.group(2))
         if 4 <= lo <= hi <= 90:
             windows.append((lo, hi))
-    for match in AGE_FROM_RE.finditer(text):
-        lo = int(match.group(1))
-        hi = int(match.group(2) or 90)
-        if 4 <= lo <= 90:
-            windows.append((lo, hi))
-    for match in AGE_TO_RE.finditer(text):
-        hi = int(match.group(1))
-        if 4 <= hi <= 90:
-            windows.append((4, hi))
+    for match in AGE_BOUND_RE.finditer(text):
+        value = int(match["age"])
+        upper = int(match["upper"]) if match["upper"] else None
+        if not 4 <= value <= 95 or (upper is not None and not value <= upper <= 95):
+            continue
+        if match["bound"] in ("до", "не старше"):
+            windows.append((4, value))
+        else:
+            windows.append((value, upper or 95))
     return windows
 
 

@@ -29,6 +29,8 @@ class OwnerWebPilot:
         self._scan_lock=asyncio.Lock()
         self.started=False
         self.auth_portal=None
+        self.login_deadline = 0.0
+        self.login_paused = False
 
     async def start(self):
         async with self._lock:
@@ -36,6 +38,8 @@ class OwnerWebPilot:
                 try:
                     await self.reader.start()
                     self.started=True
+                    self.login_deadline = time.monotonic() + 600
+                    self.login_paused = False
                 except Exception:
                     if self.reader._context:
                         await self.reader._context.close()
@@ -83,6 +87,7 @@ class OwnerWebPilot:
         if self.auth_portal is None:
             return 'Страница ввода пароля пока не настроена.'
         await self.password_ready()
+        self.login_deadline = time.monotonic() + 600
         return ('Вводите облачный пароль только на этой странице, не в чате. '
                 'Одноразовая ссылка действует 5 минут:\n'+self.auth_portal.link())
 
@@ -106,6 +111,7 @@ class OwnerWebPilot:
         if not self.store.consented():
             return 'Сначала подтвердите подключение: /webconnect.'
         await self.start()
+        self.login_deadline = time.monotonic() + 600
         if await self.verified():
             return "Аккаунт уже подключён. /webstatus"
         if await self.reader.status()=="Требуется облачный пароль":
@@ -190,23 +196,19 @@ class OwnerWebPilot:
             try:
                 if self.store.consented():
                     due=self.store.due()
-                    if due:
-                        if not self.started:
-                            await self.start()
+                    if due and not self.started and not self.login_paused:
+                        await self.start()
+                    if self.started:
                         if await self.verified():
                             try:
-                                await self.scan()
+                                if due:
+                                    await self.scan()
                             finally:
-                                # Chromium is needed to scan, but not while
-                                # Telegram sources are waiting for their next interval.
                                 await self.release_browser()
-                        elif self.started:
-                            LOG.info("Web owner scan paused: identity not verified")
-                    elif self.started:
-                        if await self.verified():
+                        elif time.monotonic() >= self.login_deadline:
+                            self.login_paused = True
                             await self.release_browser()
-                        else:
-                            LOG.info("Web owner scan paused: identity not verified")
+                            LOG.info("Telegram Web login paused until the next user request")
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
