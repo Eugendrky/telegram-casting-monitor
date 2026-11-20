@@ -6,6 +6,7 @@ import os
 import re
 import time
 from pathlib import Path
+from app.casting_card import card_heading
 from app.bot_db import Database
 from app.bot_http import BotAPI, TelegramError
 from app.config import Profile
@@ -166,7 +167,7 @@ def castings_view_messages(pilot, limit: int = 5) -> list[tuple[str, dict]]:
         return [(msg, {"inline_keyboard":buttons})]
     result=[]
     for name,mid,body,ts in rows:
-        text=f"🎬 {personal_label(name)}\n\n{body[:3000]}\n\nhttps://t.me/{name}/{mid}"
+        text=f"{pilot.store.card_heading(body)}\n{personal_label(name)}\n\n{body[:3000]}\n\nhttps://t.me/{name}/{mid}"
         markup={"inline_keyboard":[[
             {"text":"👍 Подходит","callback_data":f"webfb:yes:{name}:{mid}"},
             {"text":"👎 Не подходит","callback_data":f"webfb:no:{name}:{mid}"}]]}
@@ -630,7 +631,7 @@ class Receiver:
             match = match_post(body, profile)
             if match.matched:
                 summary = "Подходящая роль: " + match.role if match.role else casting_text(body)
-                lines.append(f"🎬 {title}\n{summary[:250]}\n{url or ''}")
+                lines.append(f"{card_heading(body, match.role)}\n{title}\n{summary[:250]}\n{url or ''}")
                 if len(lines) == 8:
                     break
         self.api.send(user_id, "\n\n".join(lines) if lines else empty_castings_text(self.db))
@@ -702,7 +703,7 @@ class Receiver:
                 self.db.discard_pending(uid, chat_id, message_id)
                 continue
             highlight = f"Подходящая роль: {match.role[:250]}\n\n" if match.role else ""
-            content=f"🎬 {title}\n\n{highlight}{casting_text(body)[:3200]}\n\n{url or ''}"
+            content=f"{card_heading(body, match.role)}\n{title}\n\n{highlight}{casting_text(body)[:3200]}\n\n{url or ''}"
             try:
                 self.api.send(uid,content,reply_markup={"inline_keyboard":[[
                     {"text":"👍 Подходит","callback_data":"feedback:yes:{}:{}".format(chat_id,message_id)},
@@ -943,7 +944,7 @@ async def run():
                                         elif cmd=="/webcastings":
                                             rows=pilot.store.latest()
                                             api.send(sender,"\n\n".join(
-                                              f"{personal_label(n)}: {body[:220]}\nhttps://t.me/{n}/{mid}"
+                                              f"{pilot.store.card_heading(body)}\n{personal_label(n)}\n{body[:220]}\nhttps://t.me/{n}/{mid}"
                                               for n,mid,body,ts in rows) or "Доставленных объявлений пока нет")
                                         elif cmd=="/webdisconnect":
                                             api.send(sender,"Удалить сессию Telegram Web и данные сборщика?",

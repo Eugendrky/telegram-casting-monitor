@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import time
 import re
+from app.casting_card import card_heading
 from app.casting_quality import actionable, casting_text
 from app.config import Profile
 from app.matcher import match_post
@@ -165,6 +166,18 @@ class WebOwnerStore:
                 (cursor,cursor,now+max(900,int(delay)),now,error,now,
                  error,visible,new,int(bool(truncated)),self.owner_id,username))
 
+    def match_for_user(self, body, data):
+        if not data:
+            return None
+        profile = Profile(city=data["city"], gender=data["gender"], age=data["age"],
+                          height_cm=data["height_cm"], kids_ok=False, include_keywords=[],
+                          exclude_keywords=["набор закрыт","уже набрали","итоги кастинга"])
+        return match_post(body, profile)
+
+    def card_heading(self, body):
+        result = self.match_for_user(body, self.db.profile(self.owner_id))
+        return card_heading(body, result.role if result else "")
+
     def add_post(self, username: str, message_id: int, body: str, posted_at: int):
         username = personal_source(username)
         if username not in {row[0] for row in self.sources()}:
@@ -182,11 +195,7 @@ class WebOwnerStore:
         digest = fingerprint(text)
         matched = False
         if data is not None and data["active"]:
-            p = Profile(city=data["city"],gender=data["gender"],age=data["age"],
-                        height_cm=data["height_cm"],kids_ok=False,
-                        include_keywords=[],exclude_keywords=[
-                            "набор закрыт","уже набрали","итоги кастинга"])
-            matched = match_post(text,p).matched
+            matched = self.match_for_user(text, data).matched
         with self.db._lock,self.db.connection:
             if matched:
                 cutoff=int(time.time())-14*86400

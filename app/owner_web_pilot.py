@@ -164,7 +164,7 @@ class OwnerWebPilot:
             name,mid,body,ts=item
             try:
                 await asyncio.to_thread(self.api.send,self.owner,
-                    f"🎬 {personal_label(name)}\n\n{body[:3100]}\n\nhttps://t.me/{name}/{mid}",
+                    f"{self.store.card_heading(body)}\n{personal_label(name)}\n\n{body[:3100]}\n\nhttps://t.me/{name}/{mid}",
                     reply_markup={"inline_keyboard":[[
                         {"text":"👍 Подходит","callback_data":f"webfb:yes:{name}:{mid}"},
                         {"text":"👎 Не подходит","callback_data":f"webfb:no:{name}:{mid}"}]]})
