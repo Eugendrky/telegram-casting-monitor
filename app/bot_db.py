@@ -557,6 +557,13 @@ class Database:
                    VALUES(?,?,?)""",(user_id,chat_id,message_id)
             )
 
+    def discard_pending(self, user_id: int, chat_id: int, message_id: int):
+        with self.connection:
+            self.connection.execute(
+                """DELETE FROM deliveries WHERE user_id=? AND chat_id=? AND message_id=?
+                   AND status='pending'""", (user_id, chat_id, message_id)
+            )
+
     def pending(self, limit: int = 12):
         return self.connection.execute(
             """SELECT d.user_id,d.chat_id,d.message_id,c.title,c.body,c.url

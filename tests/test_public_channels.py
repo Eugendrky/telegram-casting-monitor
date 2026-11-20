@@ -33,6 +33,13 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(posts[0].url, "https://t.me/castings_moscow/120")
         self.assertIsInstance(posts[0].timestamp, int)
 
+    def test_inline_formatting_preserves_role_and_age_on_one_line(self):
+        html = ('<div class="tgme_widget_message" data-post="castings_moscow/1">'
+                '<div class="tgme_widget_message_text"><b>Парень</b> 35–40 лет<br>'
+                '<b>Девушка</b> 30–34 года</div></div>')
+        self.assertEqual(parse_preview(html, "castings_moscow")[0].text,
+                         "Парень 35–40 лет\nДевушка 30–34 года")
+
     def test_invalid_names_rejected(self):
         for name in ("https://t.me/+private", "https://example.org/post", "../admin", "@a"):
             with self.subTest(name=name):

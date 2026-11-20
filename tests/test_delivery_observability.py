@@ -16,6 +16,23 @@ class API:
     def call(self,*args,**kwargs): return True
 
 class RetryTests(unittest.TestCase):
+    def test_pending_item_rechecked_after_gender_change(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = Database(Path(folder) / "db.sqlite")
+            self.addCleanup(db.close)
+            api = API()
+            api.fail = False
+            receiver = Receiver(api, db, 999)
+            sid = db.add_public("vsekastingi")
+            db.update_profile(7, "age", 38)
+            receiver.handle_post({"chat": {"id": sid}, "message_id": 26785,
+                                  "text": "Кастинг в Москве. Парень 35–40 лет"})
+            self.assertEqual(len(db.pending()), 1)
+            db.update_profile(7, "gender", "female")
+            receiver.flush()
+            self.assertFalse(api.messages)
+            self.assertFalse(db.pending())
+
     def test_migration_and_bounded_retry(self):
         with tempfile.TemporaryDirectory() as folder:
             path=Path(folder)/"test.sqlite"

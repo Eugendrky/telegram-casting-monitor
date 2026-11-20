@@ -40,6 +40,20 @@ class MatcherTests(unittest.TestCase):
         self.assertFalse(match_post(text, _profile(age=22)).matched)
         self.assertTrue(match_post(text, _profile(age=36)).matched)
 
+    def test_restaurant_casting_for_one_matching_role(self):
+        male = "Парень — 35–40 лет. Время: 11:00–14:00"
+        female = "Девушка — 45–50 лет. Время: 16:30–18:00"
+        text = "Кастинг актеров на съемку рилс-сериала для сети ресторанов. Москва\n" + (male + "\n") * 3
+        profile = _profile(age=32, height_cm=166)
+        self.assertFalse(match_post(text, profile).matched)
+        self.assertFalse(match_post(text + female, profile).matched)
+        self.assertFalse(match_post(text, _profile(age=38)).matched)
+        self.assertTrue(match_post(text, _profile(gender="male", age=38)).matched)
+        suitable = "Девушка — 30–34 года, рост 160–170 см"
+        result = match_post(text + suitable, profile)
+        self.assertTrue(result.matched)
+        self.assertEqual(result.role, suitable)
+
     def test_rejects_closed(self) -> None:
         text = "Кастинг в Москве, девушки 20-30. Набор закрыт"
         result = match_post(text, _profile())

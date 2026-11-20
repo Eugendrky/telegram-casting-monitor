@@ -627,8 +627,10 @@ class Receiver:
         rows = self.db.current_deliveries(user_id)
         lines = []
         for title, body, url in rows:
-            if match_post(body, profile).matched:
-                lines.append(f"🎬 {title}\n{body[:190]}\n{url or ''}")
+            match = match_post(body, profile)
+            if match.matched:
+                summary = "Подходящая роль: " + match.role if match.role else body
+                lines.append(f"🎬 {title}\n{summary[:250]}\n{url or ''}")
                 if len(lines) == 8:
                     break
         self.api.send(user_id, "\n\n".join(lines) if lines else empty_castings_text(self.db))
@@ -695,7 +697,12 @@ class Receiver:
 
     def flush(self):
         for uid,chat_id,message_id,title,body,url in self.db.pending():
-            content=f"🎬 {title}\n\n{body[:3200]}\n\n{url or ''}"
+            match = match_post(body, self.matching_profile(uid))
+            if not match.matched:
+                self.db.discard_pending(uid, chat_id, message_id)
+                continue
+            highlight = f"Подходящая роль: {match.role[:250]}\n\n" if match.role else ""
+            content=f"🎬 {title}\n\n{highlight}{body[:3200]}\n\n{url or ''}"
             try:
                 self.api.send(uid,content,reply_markup={"inline_keyboard":[[
                     {"text":"👍 Подходит","callback_data":"feedback:yes:{}:{}".format(chat_id,message_id)},
