@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import time
 import re
-from app.casting_quality import actionable
+from app.casting_quality import actionable, casting_text
 from app.config import Profile
 from app.matcher import match_post
 from app.post_identity import fingerprint
@@ -173,6 +173,7 @@ class WebOwnerStore:
             return False
         if not isinstance(body,str) or not body.strip() or posted_at <= 0:
             return False
+        body = casting_text(body)
         eligible,_ = actionable(body)
         if not eligible:
             return False
@@ -211,18 +212,24 @@ class WebOwnerStore:
         if not data or not data["active"]:
             return None
         with self.db._lock,self.db.connection:
-            row=self.db.connection.execute(
-                """SELECT username,message_id,body,posted_at
-                   FROM web_owner_posts WHERE user_id=? AND delivery='pending'
-                     AND attempts<4 AND next_retry<=?
-                   ORDER BY posted_at,message_id LIMIT 1""",
-                (self.owner_id,now)).fetchone()
-            if row:
+            while True:
+                row = self.db.connection.execute(
+                    """SELECT username,message_id,body,posted_at
+                       FROM web_owner_posts WHERE user_id=? AND delivery='pending'
+                         AND attempts<4 AND next_retry<=?
+                       ORDER BY posted_at,message_id LIMIT 1""", (self.owner_id,now)
+                ).fetchone()
+                if row is None:
+                    return None
+                name, mid, body, posted = row
+                body = casting_text(body)
+                eligible, _ = actionable(body)
                 self.db.connection.execute(
-                    """UPDATE web_owner_posts SET delivery='sending'
+                    """UPDATE web_owner_posts SET delivery=?
                        WHERE user_id=? AND username=? AND message_id=?""",
-                    (self.owner_id,row[0],row[1]))
-        return row
+                    ("sending" if eligible else "archived", self.owner_id, name, mid))
+                if eligible:
+                    return name, mid, body, posted
 
     def mark_delivery(self, username: str, message_id: int, status: str):
         if status not in ("sent","retry","blocked"):
@@ -257,13 +264,19 @@ class WebOwnerStore:
 
     def latest(self, limit: int = 5):
         with self.db._lock:
-            return list(self.db.connection.execute(
+            rows = self.db.connection.execute(
                 """SELECT username,message_id,body,posted_at
                    FROM web_owner_posts WHERE user_id=? AND delivery='sent'
-                     AND COALESCE(verdict,'')!='irrelevant'
-                     AND posted_at>=?
-                   ORDER BY posted_at DESC LIMIT ?""",
-                (self.owner_id,int(time.time())-48*3600,max(1,min(int(limit),20)))))
+                     AND COALESCE(verdict,'')!='irrelevant' AND posted_at>=?
+                   ORDER BY posted_at DESC""", (self.owner_id,int(time.time())-48*3600))
+            result = []
+            for name, mid, body, posted in rows:
+                body = casting_text(body)
+                if actionable(body)[0]:
+                    result.append((name, mid, body, posted))
+                if len(result) >= max(1,min(int(limit),20)):
+                    break
+            return result
 
     def stats(self):
         with self.db._lock:

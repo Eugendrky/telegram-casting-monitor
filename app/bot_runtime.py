@@ -10,7 +10,7 @@ from app.bot_db import Database
 from app.bot_http import BotAPI, TelegramError
 from app.config import Profile
 from app.matcher import match_post
-from app.casting_quality import actionable
+from app.casting_quality import actionable, casting_text
 from app.public_channels import normalize_channel, monitor_public
 from app.authorized_reader import run_authorized_reader
 from app.locale_ru import suggestion_status, readable_time, source_error
@@ -629,7 +629,7 @@ class Receiver:
         for title, body, url in rows:
             match = match_post(body, profile)
             if match.matched:
-                summary = "Подходящая роль: " + match.role if match.role else body
+                summary = "Подходящая роль: " + match.role if match.role else casting_text(body)
                 lines.append(f"🎬 {title}\n{summary[:250]}\n{url or ''}")
                 if len(lines) == 8:
                     break
@@ -702,7 +702,7 @@ class Receiver:
                 self.db.discard_pending(uid, chat_id, message_id)
                 continue
             highlight = f"Подходящая роль: {match.role[:250]}\n\n" if match.role else ""
-            content=f"🎬 {title}\n\n{highlight}{body[:3200]}\n\n{url or ''}"
+            content=f"🎬 {title}\n\n{highlight}{casting_text(body)[:3200]}\n\n{url or ''}"
             try:
                 self.api.send(uid,content,reply_markup={"inline_keyboard":[[
                     {"text":"👍 Подходит","callback_data":"feedback:yes:{}:{}".format(chat_id,message_id)},
