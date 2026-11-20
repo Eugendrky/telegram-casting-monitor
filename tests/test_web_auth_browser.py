@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, Mock
 
-from app.cloud_web_reader import CloudWebReader, INDEX_JS, select_peers
+from app.cloud_web_reader import CloudWebReader, INDEX_JS, HISTORY_JS, select_peers
 from app.web_auth_portal import AuthPortal
 
 
@@ -54,6 +54,36 @@ class AuthBrowserTests(unittest.IsolatedAsyncioTestCase):
         }""")
         raw = await self.page.evaluate(INDEX_JS, 500)
         self.assertEqual(select_peers(raw, {'moscowfilms'}), {'moscowfilms': '-221'})
+
+    async def test_private_channel_requires_membership_and_allows_only_selected_history(self):
+        await self.page.evaluate("""() => {
+          const chats = {
+            12: {_: 'channel', id: 12, pFlags: {}},
+            13: {_: 'channel', id: 13, pFlags: {left: true}},
+            14: {_: 'channel', id: 14, pFlags: {noforwards: true}},
+            15: {_: 'channel', id: 15, pFlags: {}}
+          };
+          window.appImManager = {managers: {
+            dialogsStorage: {getDialogs: async () => ({
+              dialogs: Object.keys(chats).map(id => ({peerId: -Number(id)}))
+            })},
+            appChatsManager: {getChat: async id => chats[id]},
+            appMessagesManager: {
+              getHistory: async ({peerId}) => {
+                if (peerId !== -12) throw Error('Wrong channel');
+                return {history: [9001,9002]};
+              },
+              getMessageByPeer: async (p,mid) => ({
+                id: 31, mid, message: 'Кастинг', date: 100,
+                pFlags: {noforwards: mid === 9002}
+              })
+            }
+          }};
+        }""")
+        raw = await self.page.evaluate(INDEX_JS, {"limit": 500, "privateIds": ["12","13","14"]})
+        self.assertEqual(select_peers(raw, {"c/12","c/13","c/14"}), {"c/12":"-12"})
+        rows = await self.page.evaluate(HISTORY_JS, {"peer":"-12","privateId":"12","limit":40})
+        self.assertEqual(rows, [{"id":31, "date":100, "text":"Кастинг"}])
 
     async def test_password_submit_and_redacted_rejection_on_official_origin(self):
         fixture = '''<input type="password" disabled><input type="password" aria-hidden="true"><input id="active" type="password"><script>
