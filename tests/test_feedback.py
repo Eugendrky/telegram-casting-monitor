@@ -16,7 +16,7 @@ class FeedbackTests(unittest.TestCase):
             api=FakeAPI()
             bot=Receiver(api,db,999)
             db.register(10)
-            db.record_post(-100,5,"Source","Casting female 20-30","https://t.me/cast/5",None)
+            db.record_post(-100,5,"Source","Кастинг, ищем актрису 20-30 лет","https://t.me/cast/5",None)
             db.queue(10,-100,5)
             bot.flush()
             buttons=api.messages[-1][2]["inline_keyboard"][0]

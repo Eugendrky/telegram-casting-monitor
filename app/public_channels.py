@@ -87,7 +87,9 @@ def parse_preview(markup: str, username: str) -> list[PublicPost]:
         if text is None:
             # Text absent in some media-only posts; do not manufacture a casting.
             continue
-        body = text.get_text("\n", strip=True)
+        for br in text.find_all("br"):
+            br.replace_with("\n")
+        body = text.get_text().strip()
         if not body:
             continue
         time_node = item.select_one("time[datetime]")

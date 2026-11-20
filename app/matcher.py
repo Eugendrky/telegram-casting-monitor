@@ -76,6 +76,7 @@ KIDS_HINTS = (
 KIDS_AGE_RE = re.compile(r"\b(\d{1,2})\s*[-–—]\s*(\d{1,2})\s*(?:лет|года)")
 
 FEMALE_HINTS = (
+    "девушек",
     "девушк",
     "девочек",
     "женщин",
@@ -88,6 +89,7 @@ FEMALE_HINTS = (
 )
 
 MALE_HINTS = (
+    "парень",
     "парней",
     "парня",
     "парни",
@@ -148,6 +150,7 @@ class MatchResult:
     matched: bool
     score: int
     reasons: list[str]
+    role: str = ""
 
 
 def norm(text: str) -> str:
@@ -183,6 +186,7 @@ def _mentioned_cities(text: str) -> set[str]:
 
 def _age_windows(text: str) -> list[tuple[int, int]]:
     windows: list[tuple[int, int]] = []
+    text = re.sub(r"\b[0-2]?[0-9]:[0-5][0-9]\b", " ", text)
     for match in AGE_RANGE_RE.finditer(text):
         lo, hi = int(match.group(1)), int(match.group(2))
         if 4 <= lo <= hi <= 90:
@@ -245,15 +249,17 @@ def match_post(text: str, profile: Profile) -> MatchResult:
     # match gender, age and height within one role. Never combine attributes
     # from two incompatible roles to create a false match.
     role_body = body
-    segments = [part.strip() for part in re.split(r"[\n;]+", body) if part.strip()]
+    segments = [part.strip() for part in re.split(r"[\n;]+", text) if part.strip()]
     role_segments = [
         part for part in segments
-        if (_contains_any(part, FEMALE_HINTS) or _contains_any(part, MALE_HINTS))
-        and (_age_windows(part) or _height_windows(part))
+        if (_contains_any(norm(part), FEMALE_HINTS) or _contains_any(norm(part), MALE_HINTS))
+        and (_age_windows(norm(part)) or _height_windows(norm(part)))
     ]
+    role = ""
     if len(role_segments) >= 2:
         compatible = []
-        for part in role_segments:
+        for original in role_segments:
+            part = norm(original)
             sf = _contains_any(part, FEMALE_HINTS)
             sm = _contains_any(part, MALE_HINTS)
             if profile.gender == "female" and sm and not sf:
@@ -270,10 +276,11 @@ def match_post(text: str, profile: Profile) -> MatchResult:
                 lo <= profile.height_cm <= hi for lo, hi in heights
             ):
                 continue
-            compatible.append(part)
+            compatible.append(original)
         if not compatible:
             return MatchResult(False, score, reasons + ["нет подходящей роли"])
-        role_body = " ".join(compatible)
+        role = compatible[0]
+        role_body = norm(role)
 
     both = _contains_any(role_body, BOTH_HINTS)
     female = _contains_any(role_body, FEMALE_HINTS)
@@ -323,4 +330,4 @@ def match_post(text: str, profile: Profile) -> MatchResult:
             score += 1
             reasons.append("онлайн/самоявка")
 
-    return MatchResult(True, score, reasons)
+    return MatchResult(True, score, reasons, role)
