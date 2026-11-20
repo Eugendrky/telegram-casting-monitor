@@ -66,7 +66,7 @@ class ReceiverTests(unittest.TestCase):
         self.assertTrue(markup["is_persistent"])
         actions={button["callback_data"] for row in self.api.messages[-1][2]["inline_keyboard"]
                  for button in row}
-        self.assertTrue({"web:add","web:sources","web:scan","web:status","web:connect"}.issubset(actions))
+        self.assertTrue({"menu:castings","menu:sources","web:options","menu:profile"}.issubset(actions))
 
     def test_menu_button_reopens_inline_menu(self):
         self.bot.handle_private({"from":{"id":101},"text":"📋 Меню"})

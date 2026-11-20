@@ -27,6 +27,28 @@ class ArchiveTests(unittest.TestCase):
             receiver.refresh_user(55)
             self.assertEqual(len(db.pending()),1)
             db.close()
+    def test_shared_menu_uses_current_profile_and_feedback_without_web_login(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = Database(Path(folder) / "db.sqlite")
+            self.addCleanup(db.close)
+            api = API()
+            receiver = Receiver(api, db, 999)
+            sid = db.add_public("casting_moscow_spb")
+            for uid, age in [(10, 22), (20, 36)]:
+                receiver.handle_private({"from": {"id": uid}, "text": "/start"})
+                receiver.handle_private({"from": {"id": uid}, "text": f"/age {age}"})
+            for mid, ages in [(1, "от 30 до 45 лет"), (2, "18-25 лет")]:
+                receiver.handle_post({"chat": {"id": sid, "username": "casting_moscow_spb"},
+                                      "message_id": mid, "text": f"Кастинг, ищем актрису {ages}."})
+            for uid, mid in [(10, 2), (20, 1)]:
+                receiver.process({"callback_query": {"from": {"id": uid}, "data": "menu:castings"}})
+                result = api.messages[-1][1]
+                self.assertIn(f"casting_moscow_spb/{mid}", result)
+                self.assertNotIn(f"casting_moscow_spb/{3-mid}", result)
+            db.add_feedback(20, sid, 1, "irrelevant")
+            receiver.handle_private({"from": {"id": 20}, "text": "/castings"})
+            self.assertNotIn("casting_moscow_spb/1", api.messages[-1][1])
+
     def test_status_describes_actual_scan_state(self):
         with tempfile.TemporaryDirectory() as folder:
             db=Database(Path(folder)/"db.sqlite");api=API();receiver=Receiver(api,db,999)

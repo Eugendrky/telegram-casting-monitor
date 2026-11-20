@@ -156,7 +156,8 @@ async def monitor_public(db, receiver, *, interval_seconds: int = 1200,
                 db.update_public_status(chat_id, error="Telegram временно ограничил запросы",
                                         retry_after=exc.retry_after)
                 LOG.warning("Public preview rate-limited for %s. Pausing reads.", username)
-                # Stop processing other sources for this cycle too.
+                # Apply the Telegram cooldown to the entire public catalogue.
+                await asyncio.sleep(exc.retry_after)
                 break
             except PreviewError as exc:
                 db.update_public_status(chat_id, error=str(exc)[:170],

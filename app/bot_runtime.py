@@ -21,15 +21,39 @@ from app.web_owner_store import PILOT_SOURCES
 from app.quality_guardian import inspect as inspect_quality, render as render_quality, run_guardian
 
 log = logging.getLogger("casting.bot")
+PUBLIC_CATALOG = {
+    "castings": "Кастинги в Москве",
+    "nkcasting": "NK Casting",
+    "vsekastingi": "VKASTINGE.RU",
+    "ru_cast": "Кастинги RU_CAST",
+    "intellectualcast": "Первая мастерская кастинга",
+    "casting_direct_kino": "Кастинги кино",
+    "casting_moscow_spb": "Кастинги в Москве и Санкт-Петербурге",
+    "tttvru": "Массовка, актёры, модели",
+    "castingspb": "Кастинги СПб",
+    "maspresent": "Массовки Present",
+    "massovki_tv": "Массовка и зрители ТВ",
+    "sochijobcast": "Съёмки Сочи и Краснодарского края",
+    "smscasting": "SMS Casting",
+    "tutcastingi": "Все кастинги тут!",
+    "spbeventjob": "Event Hunter Петербург",
+    "youontv": "Путь в медиа"
+}
+
 HELP = (
     "🎬 Ваши кастинги\n\n"
-    "Нажмите «✨ Актуальные кастинги», чтобы посмотреть подходящие объявления. "
-    "Отклонённые вами объявления повторно не показываются.\n\n"
-    "Для сбора подключите аккаунт один раз и отправьте боту ссылки на публичные группы "
-    "или их @имена. "
-    "Бот проверяет их автоматически и присылает совпадения с вашим профилем.\n\n"
-    "📋 Меню внизу чата: кастинги, группы, проверка и статус.\n"
-    "Профиль: /profile — город, пол, возраст и рост."
+    "Бот сам проверяет каналы и группы, где объявления видны без входа в Telegram. "
+    "Подключать аккаунт и добавлять каналы для общей подборки не нужно.\n\n"
+    "Укажите в профиле город, пол, возраст и рост. Нажмите «✨ Актуальные кастинги», "
+    "чтобы посмотреть подборку. Новые совпадения придут сюда со ссылкой на публикацию. "
+    "Отклонённые вами объявления повторно не показываются."
+)
+GROUP_ACCESS = (
+    "🔒 Закрытые группы\n\n"
+    "Чтобы кастинги из закрытой группы попали в общую подборку, её администратор "
+    "должен разрешить рассылку и добавить бота с доступом к обычным сообщениям. "
+    "Затем владелец бота включает источник. Так бот получает новые объявления.\n\n"
+    "По одной ссылке-приглашению бот прочитать группу не может."
 )
 ADMIN_HELP = ("\n\nДля администратора: /admin, /addsource "
               "(со ссылкой на канал), /publicstatus.")
@@ -94,13 +118,21 @@ def profile_menu():
 def menu():
     return {"inline_keyboard":[
         [{"text":"✨ Актуальные кастинги","style":"primary","callback_data":"menu:castings"}],
+        [{"text":"📋 Открытые источники","callback_data":"menu:sources"},
+         {"text":"🔒 Закрытые группы","callback_data":"web:options"}],
+        [{"text":"📨 Предложить канал","callback_data":"suggest:start"},
+         {"text":"👤 Профиль","callback_data":"menu:profile"}]
+    ]}
+
+def web_options():
+    return {"inline_keyboard":[
         [{"text":"➕ Добавить группы","callback_data":"web:add"},
          {"text":"📋 Мои группы","callback_data":"web:sources"}],
         [{"text":"🔎 Проверить группы","callback_data":"web:scan"},
          {"text":"📊 Статус сбора","callback_data":"web:status"}],
         [{"text":"🔐 Подключить аккаунт","callback_data":"web:connect"}],
-        [{"text":"📨 Предложить канал","callback_data":"suggest:start"},
-         {"text":"👤 Профиль","callback_data":"menu:profile"}]
+        [{"text":"Кастинги из моих групп","callback_data":"web:castings"}],
+        [{"text":"Главное меню","callback_data":"menu:home"}],
     ]}
 
 def looks_like_group_list(text: str) -> bool:
@@ -188,15 +220,28 @@ class Receiver:
 
     def source_list(self,user_id: int):
         lines=[]
+        checks = {row[0]: row for row in self.db.public_status()}
         for chat_id,title,kind,enabled,joined,username in self.db.sources():
-            if not joined:
+            if not joined or (user_id != self.owner_id and kind != "public"):
                 continue
             status="✅" if enabled else "⏳"
             following="🔔" if self.db.following(user_id,chat_id) else "🔕"
-            lines.append(f"{status} {following} {title}\nКод источника: {chat_id}")
+            if kind == "public" and username:
+                check = checks.get(title)
+                if not enabled:
+                    status = "Отключён"
+                elif check and check[2]:
+                    status = "Лента временно недоступна"
+                elif check and check[5]:
+                    status = "Лента читается"
+                else:
+                    status = "Ожидает проверки"
+                title = f"{PUBLIC_CATALOG.get(username, title)} · https://t.me/{username}"
+            lines.append(f"{following} {title}\n{status} · Код источника: {chat_id}")
         if not lines:
             return "Источников пока нет. Администратор может добавить публичный канал командой /addsource."
-        return ("Источники:\n"+ "\n".join(lines[:35])+
+        heading = "Источники" if user_id == self.owner_id else "Открытые источники каталога"
+        return (heading + ":\n"+ "\n".join(lines[:35])+
                 "\n\nДля подписки: /follow с кодом источника. Для отключения: /unfollow с кодом источника."+
                 ("\nДля управления: /enable или /disable с кодом источника." if user_id==self.owner_id else ""))
 
@@ -272,7 +317,7 @@ class Receiver:
             if arg: self.submit_suggestion(user_id,arg)
             else:
                 self.db.set_waiting_for_suggestion(user_id,True)
-                self.api.send(user_id,"Пришлите ссылку на публичный Telegram-канал.")
+                self.api.send(user_id,"Пришлите @имя или ссылку на открытый Telegram-канал, где объявления видны без входа.")
         elif cmd=="/admin":
             if user_id!=self.owner_id: return
             counts=self.db.admin_counts()
@@ -336,11 +381,7 @@ class Receiver:
         elif cmd=="/scan":
             self.request_scan(user_id)
         elif cmd=="/castings":
-            self.refresh_user(user_id)
-            self.flush()
-            rows=self.db.latest(user_id)
-            lines=[f"🎬 {title}\n{body[:190]}\n{url or ''}" for title,body,url in rows]
-            self.api.send(user_id,"\n\n".join(lines)[:3800] if lines else empty_castings_text(self.db))
+            self.show_castings(user_id)
         elif cmd=="/selftest":
             if user_id!=self.owner_id or self.owner_id<=0:
                 return
@@ -464,7 +505,7 @@ class Receiver:
             self.request_scan(user_id)
         elif data=="suggest:start":
             self.db.set_waiting_for_suggestion(user_id,True)
-            self.api.send(user_id,"Пришлите ссылку на публичный Telegram-канал.")
+            self.api.send(user_id,"Пришлите @имя или ссылку на открытый Telegram-канал, где объявления видны без входа.")
         elif data=="menu:sources":
             self.api.send(user_id,self.source_list(user_id))
         elif data.startswith("profile:"):
@@ -489,14 +530,9 @@ class Receiver:
             self.api.send(user_id,HELP + (ADMIN_HELP if user_id==self.owner_id and self.owner_id>0 else ""),reply_markup=menu())
         elif data=="menu:profile":
             self.db.register(user_id)
-            self.api.send(user_id,profile_text(self.db.profile(user_id)))
+            self.api.send(user_id,profile_text(self.db.profile(user_id)),reply_markup=profile_menu())
         elif data=="menu:castings":
-            self.refresh_user(user_id)
-            self.flush()
-            rows=self.db.latest(user_id)
-            self.api.send(user_id,"\n\n".join(
-                "🎬 {}\n{}\n{}".format(title,body[:180],url or "") for title,body,url in rows)[:3700]
-                if rows else empty_castings_text(self.db))
+            self.show_castings(user_id)
         elif data=="admin:sources":
             if user_id != self.owner_id:
                 return
@@ -575,18 +611,35 @@ class Receiver:
             except TelegramError as exc:
                 log.warning("Owner notification failed: %s",exc.code)
 
+    def matching_profile(self, user_id):
+        profile_data = self.db.profile(user_id)
+        return Profile(
+            city=profile_data["city"], gender=profile_data["gender"],
+            age=profile_data["age"], height_cm=profile_data["height_cm"],
+            kids_ok=False, include_keywords=[],
+            exclude_keywords=["набор закрыт","уже набрали","итоги кастинга"],
+        )
+
+    def show_castings(self, user_id):
+        self.refresh_user(user_id)
+        self.flush()
+        profile = self.matching_profile(user_id)
+        rows = self.db.current_deliveries(user_id)
+        lines = []
+        for title, body, url in rows:
+            if match_post(body, profile).matched:
+                lines.append(f"🎬 {title}\n{body[:190]}\n{url or ''}")
+                if len(lines) == 8:
+                    break
+        self.api.send(user_id, "\n\n".join(lines) if lines else empty_castings_text(self.db))
+
     def refresh_user(self, user_id: int, limit: int = 10) -> int:
         """Recheck recently archived posts after a profile change without web access."""
         self.db.register(user_id)
         profile_data = self.db.profile(user_id)
         if not profile_data or not profile_data["active"]:
             return 0
-        profile = Profile(
-            city=profile_data["city"], gender=profile_data["gender"],
-            age=profile_data["age"], height_cm=profile_data["height_cm"],
-            kids_ok=False, include_keywords=[],
-            exclude_keywords=["набор закрыт","уже набрали","итоги кастинга"],
-        )
+        profile = self.matching_profile(user_id)
         queued = 0
         for chat_id,message_id,title,body,url,posted_at in self.db.recent_posts():
             if queued >= limit:
@@ -664,7 +717,7 @@ async def run():
     path=Path(os.getenv("SQLITE_PATH","/data/castings.db"))
     db=Database(path)
     # Owner-supplied initial public sources. Existing approval/settings persist.
-    for name in ("castingiot4000r", "moscowfilms", "kinocekh"):
+    for name in (*PUBLIC_CATALOG, "castingiot4000r", "moscowfilms", "kinocekh"):
         if not any(item[5] == name for item in db.sources()):
             db.add_public(name)
     api=BotAPI(token)
@@ -896,14 +949,16 @@ async def run():
                         data=callback.get("data") or ""
                         caller=(callback.get("from") or {}).get("id")
                         caller_username=(callback.get("from") or {}).get("username")
-                        if data.startswith("web:") or data.startswith("webfb:") or data=="menu:castings":
+                        if data.startswith("web:") or data.startswith("webfb:"):
                             handled=True
                             callback_chat=(callback.get('message') or {}).get('chat') or {}
                             if (web_users is not None and isinstance(caller,int)
                                     and callback_chat.get('type')=='private'
                                     and callback_chat.get('id')==caller
                                     and web_users.is_allowed(caller,caller_username)):
-                                if data=="menu:castings":
+                                if data=="web:options":
+                                    api.send(caller,GROUP_ACCESS + "\n\nДля вас также доступен личный сбор через Telegram Web. Он работает с выбранными группами с @именем, которые видит ваш аккаунт. Совпадения приходят только вам.",reply_markup=web_options())
+                                elif data=="web:castings":
                                     pilot=web_users.get(caller,create=False)
                                     if pilot is None or not pilot.store.consented():
                                         api.send(caller,
@@ -1039,7 +1094,10 @@ async def run():
                                         except ValueError:
                                             pass
                             elif isinstance(caller,int) and callback_chat.get('type')=='private':
-                                api.send(caller,"Сборщик групп доступен пользователям, которых добавил администратор.")
+                                if data == "web:options":
+                                    api.send(caller,GROUP_ACCESS,reply_markup=menu())
+                                else:
+                                    api.send(caller,"Личный сбор доступен пользователям, которых добавил администратор. Общий каталог доступен всем.",reply_markup=menu())
                             if callback.get('id'):
                                 await asyncio.to_thread(api.call,'answerCallbackQuery',callback_query_id=callback['id'])
                         if not handled:

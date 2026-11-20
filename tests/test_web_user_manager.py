@@ -73,6 +73,22 @@ class WebUserManagerTests(unittest.TestCase):
         self.assertIsNone(pilot.reader._pw)
         self.assertIsNone(pilot.reader._page)
 
+    def test_expired_login_stops_chromium_until_user_returns(self):
+        from unittest.mock import patch
+        pilot = self.manager.get(900)
+        pilot.store.consent()
+        pilot.store.select_source("moscowfilms")
+        pilot.started = True
+        pilot.reader.account_id = AsyncMock(return_value=None)
+        pilot.start = AsyncMock()
+        with patch("app.owner_web_pilot.asyncio.sleep",
+                   side_effect=[None, asyncio.CancelledError]):
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(pilot.run())
+        self.assertFalse(pilot.started)
+        self.assertTrue(pilot.login_paused)
+        pilot.start.assert_not_awaited()
+
     def test_background_scan_releases_browser_after_due_scan(self):
         pilot = self.manager.get(900)
         pilot.store.consent()

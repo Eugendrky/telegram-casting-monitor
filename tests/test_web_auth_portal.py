@@ -221,6 +221,8 @@ class PilotAuthTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_restart_resumes_only_consented_profile(self):
         self.pilot.store.consent()
+        self.pilot.store.select_source("moscowfilms")
+        self.pilot.started = False
         self.pilot.start = AsyncMock(side_effect=asyncio.CancelledError)
         with self.assertRaises(asyncio.CancelledError):
             await self.pilot.run()

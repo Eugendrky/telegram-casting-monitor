@@ -600,6 +600,20 @@ class Database:
                 (status,attempts,error,next_retry,user_id,chat_id,message_id)
             )
 
+    def current_deliveries(self, user_id: int):
+        return self.connection.execute(
+            """SELECT c.title,c.body,c.url FROM castings c
+               JOIN deliveries d USING(chat_id,message_id)
+               JOIN sources s USING(chat_id)
+               LEFT JOIN casting_feedback f USING(user_id,chat_id,message_id)
+               LEFT JOIN source_preferences p USING(user_id,chat_id)
+               WHERE d.user_id=? AND d.status='sent' AND s.enabled AND s.joined
+                 AND COALESCE(f.verdict,'') != 'irrelevant' AND COALESCE(p.following,1)
+                 AND COALESCE(c.posted_at,unixepoch(c.created_at)) >= unixepoch()-172800
+               ORDER BY COALESCE(c.posted_at,unixepoch(c.created_at)) DESC,c.message_id DESC""",
+            (user_id,),
+        )
+
     def latest(self, user_id: int, limit: int = 8):
         return self.connection.execute(
             """SELECT c.title,c.body,c.url FROM castings c
