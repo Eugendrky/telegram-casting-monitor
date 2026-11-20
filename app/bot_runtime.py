@@ -21,6 +21,25 @@ from app.web_owner_store import PILOT_SOURCES
 from app.quality_guardian import inspect as inspect_quality, render as render_quality, run_guardian
 
 log = logging.getLogger("casting.bot")
+PUBLIC_CATALOG = {
+    "castings": "Кастинги в Москве",
+    "nkcasting": "NK Casting",
+    "vsekastingi": "VKASTINGE.RU",
+    "ru_cast": "Кастинги RU_CAST",
+    "intellectualcast": "Первая мастерская кастинга",
+    "casting_direct_kino": "Кастинги кино",
+    "casting_moscow_spb": "Кастинги в Москве и Санкт-Петербурге",
+    "tttvru": "Массовка, актёры, модели",
+    "castingspb": "Кастинги СПб",
+    "maspresent": "Массовки Present",
+    "massovki_tv": "Массовка и зрители ТВ",
+    "sochijobcast": "Съёмки Сочи и Краснодарского края",
+    "smscasting": "SMS Casting",
+    "tutcastingi": "Все кастинги тут!",
+    "spbeventjob": "Event Hunter Петербург",
+    "youontv": "Путь в медиа"
+}
+
 HELP = (
     "🎬 Ваши кастинги\n\n"
     "Бот сам проверяет каналы и группы, где объявления видны без входа в Telegram. "
@@ -201,12 +220,24 @@ class Receiver:
 
     def source_list(self,user_id: int):
         lines=[]
+        checks = {row[0]: row for row in self.db.public_status()}
         for chat_id,title,kind,enabled,joined,username in self.db.sources():
             if not joined or (user_id != self.owner_id and kind != "public"):
                 continue
             status="✅" if enabled else "⏳"
             following="🔔" if self.db.following(user_id,chat_id) else "🔕"
-            lines.append(f"{status} {following} {title}\nКод источника: {chat_id}")
+            if kind == "public" and username:
+                check = checks.get(title)
+                if not enabled:
+                    status = "Отключён"
+                elif check and check[2]:
+                    status = "Лента временно недоступна"
+                elif check and check[5]:
+                    status = "Лента читается"
+                else:
+                    status = "Ожидает проверки"
+                title = f"{PUBLIC_CATALOG.get(username, title)} · https://t.me/{username}"
+            lines.append(f"{following} {title}\n{status} · Код источника: {chat_id}")
         if not lines:
             return "Источников пока нет. Администратор может добавить публичный канал командой /addsource."
         heading = "Источники" if user_id == self.owner_id else "Открытые источники каталога"
@@ -686,13 +717,7 @@ async def run():
     path=Path(os.getenv("SQLITE_PATH","/data/castings.db"))
     db=Database(path)
     # Owner-supplied initial public sources. Existing approval/settings persist.
-    for name in (
-        "castingiot4000r", "moscowfilms", "kinocekh",
-        "casting_moscow_spb", "vsekastingi", "tttvru", "ru_cast",
-        "spbeventjob", "castingspb", "intellectualcast", "nkcasting",
-        "sochijobcast", "casting_direct_kino", "castings", "smscasting",
-        "tutcastingi", "massovki_tv", "maspresent",
-    ):
+    for name in (*PUBLIC_CATALOG, "castingiot4000r", "moscowfilms", "kinocekh"):
         if not any(item[5] == name for item in db.sources()):
             db.add_public(name)
     api=BotAPI(token)
