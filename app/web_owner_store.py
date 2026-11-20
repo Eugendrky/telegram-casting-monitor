@@ -16,6 +16,23 @@ from app.public_channels import normalize_channel
 PILOT_SOURCES = frozenset(("castingiot4000r", "kinocekh", "moscowfilms"))
 
 
+def personal_source(value: str) -> str:
+    """Private post links use a stable channel ID, scoped to the user's store."""
+    value = value.strip()
+    key = re.fullmatch(r"c/([1-9][0-9]{0,14})", value)
+    link = re.fullmatch(
+        r"(?:https://)?t[.]me/c/([1-9][0-9]{0,14})/(?:[1-9][0-9]*/)?[1-9][0-9]*(?:[?][^# ]*)?",
+        value,
+    )
+    if key or link:
+        return "c/" + (key or link).group(1)
+    return normalize_channel(value)
+
+
+def personal_label(key: str) -> str:
+    return "Закрытый канал " + key[2:] if key.startswith("c/") else "@" + key
+
+
 class WebOwnerStore:
     def __init__(self, db, owner_id: int):
         if not isinstance(owner_id, int) or owner_id <= 0:
@@ -81,14 +98,14 @@ class WebOwnerStore:
         invalid=[]
         for token in tokens:
             try:
-                name=normalize_channel(token)
+                name=personal_source(token)
             except ValueError:
                 invalid.append(token)
             else:
                 if name not in names:
                     names.append(name)
         if invalid:
-            raise ValueError("Не распознал: {}. Пришлите публичные @username или ссылки t.me.".format(
+            raise ValueError("Не распознал: {}. Пришлите @имя или ссылку на публикацию из закрытого канала.".format(
                 ", ".join(invalid[:5])))
         return names
 
@@ -113,7 +130,7 @@ class WebOwnerStore:
         return usernames
 
     def remove_source(self, raw: str) -> bool:
-        username = normalize_channel(raw)
+        username = personal_source(raw)
         with self.db._lock, self.db.connection:
             changed = self.db.connection.execute(
                 "DELETE FROM web_owner_sources WHERE user_id=? AND username=?",
@@ -149,7 +166,7 @@ class WebOwnerStore:
                  error,visible,new,int(bool(truncated)),self.owner_id,username))
 
     def add_post(self, username: str, message_id: int, body: str, posted_at: int):
-        username = normalize_channel(username)
+        username = personal_source(username)
         if username not in {row[0] for row in self.sources()}:
             raise ValueError("Источник не выбран")
         if not isinstance(message_id,int) or message_id <= 0:

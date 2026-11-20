@@ -17,7 +17,7 @@ from app.locale_ru import suggestion_status, readable_time, source_error
 from app.source_readiness import readiness_text, empty_castings_text
 from app.owner_web_pilot import OwnerWebPilot
 from app.web_user_manager import WebUserManager
-from app.web_owner_store import PILOT_SOURCES
+from app.web_owner_store import PILOT_SOURCES, personal_source, personal_label
 from app.quality_guardian import inspect as inspect_quality, render as render_quality, run_guardian
 
 log = logging.getLogger("casting.bot")
@@ -150,7 +150,7 @@ def castings_view_messages(pilot, limit: int = 5) -> list[tuple[str, dict]]:
     """Return a concise current view of delivered matches with their feedback actions."""
     sources = pilot.store.sources()
     if not sources:
-        return [("Список групп пуст. Добавьте публичные группы через меню — бот начнёт проверку автоматически.",
+        return [("Список групп пуст. Добавьте канал по ссылке на сообщение через меню — бот начнёт проверку автоматически.",
                  {"inline_keyboard":[[{"text":"➕ Добавить группы","callback_data":"web:add"}] ]})]
     rows = pilot.store.latest(limit=limit)
     if not rows:
@@ -166,7 +166,7 @@ def castings_view_messages(pilot, limit: int = 5) -> list[tuple[str, dict]]:
         return [(msg, {"inline_keyboard":buttons})]
     result=[]
     for name,mid,body,ts in rows:
-        text=f"🎬 @{name}\n\n{body[:3000]}\n\nhttps://t.me/{name}/{mid}"
+        text=f"🎬 {personal_label(name)}\n\n{body[:3000]}\n\nhttps://t.me/{name}/{mid}"
         markup={"inline_keyboard":[[
             {"text":"👍 Подходит","callback_data":f"webfb:yes:{name}:{mid}"},
             {"text":"👎 Не подходит","callback_data":f"webfb:no:{name}:{mid}"}]]}
@@ -176,7 +176,7 @@ def castings_view_messages(pilot, limit: int = 5) -> list[tuple[str, dict]]:
 def web_sources_report(pilot, scan_result: str | None = None) -> tuple[str, dict]:
     rows=pilot.store.sources()
     if not rows:
-        body="Ваш список групп пока пуст. Нажмите «➕ Добавить группы» и отправьте username списком."
+        body="Ваш список групп пока пуст. Нажмите «➕ Добавить группы» и отправьте ссылку на сообщение из канала."
         return body,{"inline_keyboard":[[
             {"text":"➕ Добавить группы","callback_data":"web:add"},
             {"text":"↩️ В меню","callback_data":"web:menu"}]]}
@@ -195,11 +195,11 @@ def web_sources_report(pilot, scan_result: str | None = None) -> tuple[str, dict
             state=f"⚠️ Последняя попытка: {readable_time(checked)}, успеха пока нет"
         else:
             state="🕒 Ожидает первой проверки"
-        lines.append(f"@{name}\n{state}")
+        lines.append(f"{personal_label(name)}\n{state}")
     heading="📋 Ваши группы для сбора:\n\n"
     if scan_result:
         heading="🔎 Результат проверки: "+scan_result+"\n\n"
-    keyboard=[[{"text":f"Убрать @{row[0]}","callback_data":f"web:remove:{row[0]}"}]
+    keyboard=[[{"text":f"Убрать {personal_label(row[0])}","callback_data":f"web:remove:{row[0]}"}]
               for row in rows[:20]]
     keyboard.extend([
         [{"text":"➕ Добавить группы","callback_data":"web:add"},
@@ -811,7 +811,7 @@ async def run():
                                         report,markup=web_sources_report(pilot)
                                         api.send(sender,
                                             "✅ Добавлено групп: {}\n{}\n\nПроверка начнётся автоматически.\n\n{}".format(
-                                                len(names),", ".join("@"+name for name in names),report),
+                                                len(names),", ".join(personal_label(name) for name in names),report),
                                             reply_markup=markup)
                                     except ValueError as exc:
                                         api.send(sender,str(exc))
@@ -831,7 +831,7 @@ async def run():
                                     names=pilot.store.select_sources(message_text)
                                     await web_users.activate(sender)
                                     text=("✅ Добавлено групп: {}\n{}\n\n".format(
-                                        len(names),", ".join("@"+name for name in names))+
+                                        len(names),", ".join(personal_label(name) for name in names))+
                                         "Проверка начнётся автоматически. Можно запустить её кнопкой ниже.")
                                     api.send(sender,text,reply_markup=web_sources_report(pilot)[1])
                                 except ValueError as exc:
@@ -915,16 +915,16 @@ async def run():
                                         elif cmd=="/websource":
                                             name=pilot.store.select_source((msg.get("text") or "").partition(" ")[2])
                                             report,markup=web_sources_report(pilot)
-                                            api.send(sender,"✅ Группа добавлена: @"+name+
+                                            api.send(sender,"✅ Добавлен источник: "+personal_label(name)+
                                                 ". Автопроверка начнётся в ближайший цикл.\n\n"+report,
                                                 reply_markup=markup)
                                         elif cmd=="/webremove":
                                             raw=(msg.get("text") or "").partition(" ")[2]
                                             removed=pilot.store.remove_source(raw)
-                                            name=normalize_channel(raw)
+                                            name=personal_source(raw)
                                             report,markup=web_sources_report(pilot)
-                                            api.send(sender,("✅ Группа удалена: @"+name+"\n\n" if removed else
-                                                ("Группы @"+name+" не было в списке.\n\n"))+report,
+                                            api.send(sender,("✅ Удалён источник: "+personal_label(name)+"\n\n" if removed else
+                                                ("Источника "+personal_label(name)+" не было в списке.\n\n"))+report,
                                                 reply_markup=markup)
                                         elif cmd=="/websources":
                                             report,markup=web_sources_report(pilot)
@@ -936,7 +936,7 @@ async def run():
                                         elif cmd=="/webcastings":
                                             rows=pilot.store.latest()
                                             api.send(sender,"\n\n".join(
-                                              f"@{n}: {body[:220]}\nhttps://t.me/{n}/{mid}"
+                                              f"{personal_label(n)}: {body[:220]}\nhttps://t.me/{n}/{mid}"
                                               for n,mid,body,ts in rows) or "Доставленных объявлений пока нет")
                                         elif cmd=="/webdisconnect":
                                             api.send(sender,"Удалить сессию Telegram Web и данные сборщика?",
@@ -957,7 +957,7 @@ async def run():
                                     and callback_chat.get('id')==caller
                                     and web_users.is_allowed(caller,caller_username)):
                                 if data=="web:options":
-                                    api.send(caller,GROUP_ACCESS + "\n\nДля вас также доступен личный сбор через Telegram Web. Он работает с выбранными группами с @именем, которые видит ваш аккаунт. Совпадения приходят только вам.",reply_markup=web_options())
+                                    api.send(caller,GROUP_ACCESS + "\n\nДля вас также доступен личный сбор через Telegram Web. Скопируйте ссылку на сообщение из закрытого канала, в котором состоите. После входа добавьте её в «Мои группы». Совпадения приходят только вам.",reply_markup=web_options())
                                 elif data=="web:castings":
                                     pilot=web_users.get(caller,create=False)
                                     if pilot is None or not pilot.store.consented():
@@ -1009,9 +1009,9 @@ async def run():
                                             await web_users.activate(caller)
                                             web_group_prompt.add(caller)
                                             api.send(caller,
-                                                "Пришлите публичные группы одним сообщением: по одному @username "
-                                                "на строке, через пробел, запятую или точку с запятой.\n\n"
-                                                "Можно отправить ссылки t.me. Закрытые приглашения не поддерживаются.",
+                                                "Откройте нужную публикацию в Telegram и нажмите «Копировать ссылку». "
+                                                "Пришлите ссылку вида https://t.me/c/123456789/42 или @имя канала.\n\n"
+                                                "Нужен доступ к каналу в вашем аккаунте. Ссылка-приглашение для поиска не подходит.",
                                                 reply_markup={"inline_keyboard":[[
                                                     {"text":"Отмена","callback_data":"web:cancel"}]]})
                                         except ValueError as exc:
@@ -1057,13 +1057,13 @@ async def run():
                                 elif data.startswith("web:remove:"):
                                     pilot=web_users.get(caller,create=False)
                                     try:
-                                        name=normalize_channel(data.partition("web:remove:")[2])
+                                        name=personal_source(data.partition("web:remove:")[2])
                                         removed=(pilot.store.remove_source(name)
                                                  if pilot is not None and pilot.store.consented() else False)
                                         report,markup=web_sources_report(pilot) if pilot else (
                                             "Сборщик не подключён.",menu())
-                                        api.send(caller,("✅ Группа удалена: @"+name+"\n\n" if removed else
-                                            ("Группы @"+name+" нет в списке.\n\n"))+report,
+                                        api.send(caller,("✅ Удалён источник: "+personal_label(name)+"\n\n" if removed else
+                                            ("Источника "+personal_label(name)+" нет в списке.\n\n"))+report,
                                             reply_markup=markup)
                                     except ValueError as exc:
                                         api.send(caller,str(exc))

@@ -1,10 +1,20 @@
 import unittest
 from app.cloud_web_reader import select_peers,validate_posts
 
+from app.web_owner_store import personal_source
+
+
 class WebReaderTests(unittest.TestCase):
     def test_only_explicitly_approved_sources(self):
         peers=[{"username":"moscowfilms","peer":"-111"},{"username":"othergroup","peer":"-222"},{"username":"kinocekh","peer":"-333"},{"username":"moscowfilms","peer":"777"}]
         self.assertEqual(select_peers(peers,{"moscowfilms","kinocekh"}),{"moscowfilms":"-111","kinocekh":"-333"})
+    def test_private_message_links_are_channel_scoped(self):
+        self.assertEqual(personal_source("https://t.me/c/12345/567"), "c/12345")
+        self.assertEqual(personal_source("https://t.me/c/12345/12/567?single"), "c/12345")
+        for link in ("https://t.me/+invite", "https://t.me/c/0/42", "https://other.test/c/12345/567"):
+            with self.assertRaises(ValueError):
+                personal_source(link)
+
     def test_recent_cursor_and_text_validation(self):
         now=1800000000
         raw=[{"id":10,"date":now-500,"text":"Кастинг актриса"},{"id":9,"date":now-500,"text":"Второй"},

@@ -19,11 +19,15 @@ from app.public_channels import (
     normalize_channel, fetch_preview, PreviewError, PreviewRateLimited,
 )
 
+from app.web_owner_store import personal_source
+
 LOG = logging.getLogger("casting.cloudweb")
 ORIGIN = "https://web.telegram.org/k/"
 # Only metadata from the dialog index is used to establish the *exact* username;
 # no messages from unapproved chat IDs are ever queried.
-INDEX_JS = r"""async (maxDialogs) => {
+INDEX_JS = r"""async (request) => {
+  const maxDialogs = request.limit || request;
+  const selected = new Set(request.privateIds || []);
   const m=window.appImManager?.managers;
   if (!m) throw new Error('Telegram Web session not ready');
   const found=[];
@@ -37,23 +41,33 @@ INDEX_JS = r"""async (maxDialogs) => {
       const chat=await m.appChatsManager.getChat(-peer);
       const username=chat?.username || (chat?.usernames || [])
         .find(x=>x.active || x.pFlags?.active)?.username || '';
+      if (chat?._ === 'channel' && selected.has(String(chat.id)) &&
+          !chat.pFlags?.left && !chat.pFlags?.kicked && !chat.pFlags?.noforwards) {
+        found.push({privateId:String(chat.id),peer:String(peer)});
+      }
       if (username) found.push({username:String(username).toLowerCase(),peer:String(peer)});
     }
   }
   return found;
 }"""
 
-HISTORY_JS = r"""async ({peer,limit}) => {
+HISTORY_JS = r"""async ({peer,limit,privateId}) => {
   const m=window.appImManager?.managers;
   if (!m) throw new Error('Telegram Web session not ready');
   const p=Number(peer);
   if (!Number.isSafeInteger(p) || p >= 0) throw new Error('Invalid group peer');
+  if (privateId) {
+    const chat = await m.appChatsManager.getChat(-p);
+    if (chat?._ !== 'channel' || String(chat.id) !== privateId ||
+        chat.pFlags?.left || chat.pFlags?.kicked || chat.pFlags?.noforwards)
+      throw new Error('Private channel unavailable');
+  }
   const page=await m.appMessagesManager.getHistory({peerId:p,limit,offsetId:0});
   const out=[];
   for (const mid of (page.history || [])) {
     const item=await m.appMessagesManager.getMessageByPeer(p,mid);
-    if (!item) continue;
-    out.push({id:item.mid,date:item.date,text:item.message || ''});
+    if (!item || item.pFlags?.noforwards) continue;
+    out.push({id:privateId ? item.id : item.mid,date:item.date,text:item.message || ''});
   }
   return out;
 }"""
@@ -96,13 +110,19 @@ def select_peers(raw, approved: set[str]):
     """Never allow fuzzy title matching or unauthorized group access."""
     if not isinstance(raw,list):
         raise ValueError("Telegram Web не вернул список доступных групп")
-    allow={normalize_channel(name) for name in approved}
+    allow={personal_source(name) for name in approved}
     result={}
     for item in raw[:1000]:
         if not isinstance(item,dict):
             continue
         username=item.get("username")
         peer=item.get("peer")
+        private_id = item.get("privateId")
+        if isinstance(private_id, str) and isinstance(peer, str):
+            key = "c/" + private_id
+            if key in allow and peer == "-" + private_id:
+                result[key] = peer
+            continue
         if not isinstance(username,str) or not isinstance(peer,str):
             continue
         try:
@@ -265,9 +285,12 @@ class CloudWebReader:
             # Search up to 500 dialog summaries per Telegram folder. Only the
             # exact approved usernames are retained; message history is read
             # only after an exact match.
-            peers=select_peers(await self._page.evaluate(INDEX_JS,500),approved)
+            peers=select_peers(await self._page.evaluate(INDEX_JS,{"limit":500, "privateIds":[n[2:] for n in approved if n.startswith("c/")]}),approved)
             for name,cursor,_,_,_,_,_,_,_ in chosen:
                 if name not in peers:
+                    if name.startswith("c/"):
+                        self.owner_store.update_source(name,error="Канал недоступен в этом аккаунте или защищён от копирования",delay=3600)
+                        continue
                     # A selected public channel may be readable through Telegram's
                     # public web preview even when the user has not joined it.
                     now=int(time.time())
@@ -307,7 +330,7 @@ class CloudWebReader:
                 now=int(time.time())
                 try:
                     messages=await self._page.evaluate(
-                        HISTORY_JS,{"peer":peers[name],"limit":40}
+                        HISTORY_JS,{"peer":peers[name],"limit":40, **({"privateId":name[2:]} if name.startswith("c/") else {})}
                     )
                     recent=validate_posts(
                         messages,now=now,lookback_hours=self.lookback_hours,

@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from app.cloud_web_reader import CloudWebReader,same_account
-from app.web_owner_store import WebOwnerStore
+from app.web_owner_store import WebOwnerStore, personal_label
 
 LOG=logging.getLogger("casting.webpilot")
 
@@ -164,7 +164,7 @@ class OwnerWebPilot:
             name,mid,body,ts=item
             try:
                 await asyncio.to_thread(self.api.send,self.owner,
-                    f"🎬 @{name}\n\n{body[:3100]}\n\nhttps://t.me/{name}/{mid}",
+                    f"🎬 {personal_label(name)}\n\n{body[:3100]}\n\nhttps://t.me/{name}/{mid}",
                     reply_markup={"inline_keyboard":[[
                         {"text":"👍 Подходит","callback_data":f"webfb:yes:{name}:{mid}"},
                         {"text":"👎 Не подходит","callback_data":f"webfb:no:{name}:{mid}"}]]})
