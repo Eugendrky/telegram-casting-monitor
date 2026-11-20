@@ -1,6 +1,6 @@
 import unittest
 from datetime import date
-from app.casting_quality import actionable
+from app.casting_quality import actionable, casting_text
 from app.config import Profile
 from app.matcher import match_post
 
@@ -24,6 +24,19 @@ class CastingQualityTests(unittest.TestCase):
             with self.subTest(text=text):
                 result=actionable(text,DATE)
                 self.assertEqual(result[0],expected,result)
+
+    def test_streamer_promo_is_not_a_casting(self):
+        promo = ("🎥\nTwitch | Cтримы :\nhttps://twitch.tv/example\n"
+                 "RUTUBE :\nhttps://rutube.ru/u/example\nInstagram :\n"
+                 "на ход ноги\nhttps://www.donationalerts.com/r/example\n"
+                 "По рекламе - https://t.me/example")
+        self.assertFalse(actionable(promo)[0])
+        self.assertFalse(match_post(promo + "\n#кастинг #актеры", PROFILE).matched)
+        self.assertFalse(actionable("Мой канал актрисы https://example.org/casting")[0])
+        call = "Кастинг в Москве. Ищем актрису 40-50 лет. Заявки: @producer"
+        self.assertTrue(match_post(call + "\n" + promo, PROFILE).matched)
+        self.assertTrue(casting_text(promo + "\n" + call).endswith(call))
+        self.assertNotIn("donationalerts", casting_text(call + "\n" + promo))
 
     def test_structured_casting_post_without_casting_keyword(self):
         post=("Роль: Офисные сотрудники МУЖЧИНЫ\n"

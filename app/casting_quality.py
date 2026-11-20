@@ -48,8 +48,34 @@ DEADLINE = re.compile(
 )
 
 
+URL = re.compile(r"(?:https?://|www[.])\S+", re.I)
+STREAM_HEADER = re.compile(r"^[^\w]*(?:twitch|твич|[сc]тримы)\s*(?:[|:]|$)", re.I)
+DONATION = re.compile(r"donationalerts[.]com/|на ход ноги|на донаты", re.I)
+
+
+def casting_text(text: str) -> str:
+    """Remove a streamer's social/donation block before classification and display."""
+    text = text or ""
+    if not DONATION.search(text):
+        return text
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if not STREAM_HEADER.search(line.strip()):
+            continue
+        end = index + 1
+        while end < len(lines):
+            plain = re.sub(r"#\w+", "", URL.sub("", lines[end]))
+            if CASTING.search(plain) or (RECRUITMENT.search(plain) and ROLE.search(plain)):
+                break
+            end += 1
+        while index and not re.search(r"\w", lines[index - 1]):
+            index -= 1
+        return "\n".join(lines[:index] + lines[end:]).strip()
+    return text
+
+
 def actionable(text: str, today: date | None = None) -> tuple[bool, str]:
-    normalized = " ".join((text or "").lower().replace("ё", "е").split())
+    normalized = " ".join(URL.sub("", casting_text(text)).lower().replace("ё", "е").split())
     if not normalized:
         return False, "пустая публикация"
     if any(term.replace("ё", "е") in normalized for term in CLOSED):

@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 
 from app.config import Profile
-from app.casting_quality import actionable
+from app.casting_quality import actionable, casting_text
 
 _YO = str.maketrans({"ё": "е", "Ё": "е"})
 
@@ -218,6 +218,7 @@ def _height_windows(text: str) -> list[tuple[int, int]]:
 
 
 def match_post(text: str, profile: Profile) -> MatchResult:
+    text = casting_text(text)
     body = norm(text)
     reasons: list[str] = []
     score = 0
